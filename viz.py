@@ -84,24 +84,31 @@ if __name__ == "__main__":
 
     # cb_test(0, (), rhos)
 
-    masks = masks[:2]
+    # masks = masks[:2]
     num_masks = len(masks)
 
     # plot
-    fig, ax = plt.subplots(num_masks, num_layers)
 
-    funcs = []
-    vmax_all = 0
-    for j in range(num_masks):
-        tmp = masks[j]
-        for idx in range(num_layers):
+    def plot(save_load_config, t, epoch): 
+        os.makedirs(f"{save_load_config['save_path']}/{t}/epochs_{0}", exist_ok=True)
+        for ndx in range(num_masks):
+            fig, ax = plt.subplots(1, num_layers, figsize=(4 * num_layers, 4))
+            # ax = ax.flatten(1)
+
+            funcs = []
+            vmax_all = 0
+
+            tmp = masks[ndx]
+            for idx in range(num_layers):
+                print(tmp)
+                tmp, vmax, func = layers[idx].viz_abs(tmp, ax=ax[idx])
+                funcs.append(func)
+                vmax_all = max(vmax_all, vmax)
             print(tmp)
-            tmp, vmax, func = layers[idx].viz_abs(tmp, ax=ax[j][idx])
-            funcs.append(func)
-            vmax_all = max(vmax_all, vmax)
-        print(tmp)
 
-    for func in funcs:
-        func(vmax_all)
+            for func in funcs:
+                func(vmax_all)
 
-    plt.show()
+            # save
+            plt.savefig(f"{save_load_config['save_path']}/{t}/epochs_{0}/{inputs[ndx]}_{ouputs[ndx]}.png")
+            plt.close(fig)

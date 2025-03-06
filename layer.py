@@ -44,9 +44,9 @@ def prepare_io(omega, resolution, input_list, output_list, epsr_total, m=1):
 
 class Layer:
     def __init__(self, grid, input, output, basic):
-        n_bits_o = output["n_bits"]
-        grid["ny"] = int(256 / 9 * (2 * n_bits_o + 1))
-        grid["nx"] = int(208)
+        # n_bits_o = output["n_bits"]
+        # grid["ny"] = int(256 / 9 * (2 * n_bits_o + 1))
+        # grid["nx"] = int(208)
         self.rho, self.bg_rho, self.opt_region, self.input_list, self.output_list = (
             bgc.init_layer(grid, input, output)
         )

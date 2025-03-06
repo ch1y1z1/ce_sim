@@ -11,7 +11,7 @@ import shutil
 
 if __name__ == "__main__":
     t = time.asctime(time.localtime(time.time()))
-    config_file = "./Configuration/chi_config.toml"
+    config_file = "./Configuration/5bit.toml"
     config = toml.load(config_file)
     train_config = config["train"]
     save_load_config = config["save_load"]
@@ -48,6 +48,7 @@ if __name__ == "__main__":
         ouputs = npa.load(ouputs).tolist()
     n_bits = dataset_config["n_bits"]
     masks = list(map(lambda x: encode_input(n_bits, x), inputs))
+    num_masks = len(masks)
     expected_output = list(map(lambda x: encode_output(n_bits, x), ouputs))
 
     def obj(rhos):
@@ -87,6 +88,30 @@ if __name__ == "__main__":
                     f"{save_load_config['save_path']}/{t}/{idx}.npy",
                     rhos,
                 )
+        
+        if idx % save_load_config["viz_freq"] == 0:
+            os.makedirs(f"{save_load_config['save_path']}/{t}/epochs_{idx}", exist_ok=True)
+            for ndx in range(num_masks):
+                fig, ax = plt.subplots(1, num_layers, figsize=(4 * num_layers, 4))
+                # ax = ax.flatten(1)
+
+                funcs = []
+                vmax_all = 0
+
+                tmp = masks[ndx]
+                for ldx in range(num_layers):
+                    # print(tmp)
+                    tmp, vmax, func = layers[ldx].viz_abs(tmp, ax=ax[ldx])
+                    funcs.append(func)
+                    vmax_all = max(vmax_all, vmax)
+                # print(tmp)
+
+                for func in funcs:
+                    func(vmax_all)
+
+                # save
+                plt.savefig(f"{save_load_config['save_path']}/{t}/epochs_{idx}/{inputs[ndx]}_{ouputs[ndx]}.png")
+                plt.close(fig)
 
     (rhos_optimum, loss) = adam_optimize(
         obj,

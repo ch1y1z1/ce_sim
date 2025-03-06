@@ -47,10 +47,12 @@ E0_scale = 3.0     # Ez0的缩放因子
 step_size = 0.003     # 优化步长
 test_batch_size = 32  # 测试批次大小
 train_batch_size = 32 # 训练批次大小 
-num_epochs = 100      # 训练轮数
+num_epochs = 0        # 训练轮数
 penalty_factor = 1.5  # 惩罚因子（用于约束违反）
 
 [save_load]
+save_pics = true
 test_freq = 2
-save_path = "./models" # 保存和加载模型的路径
+viz_freq = 10
+# save_path = "./models" # 保存和加载模型的路径
 # load_path = "./models/Thu Feb 27 21:06:47 2025/48.npy" # 加载模型的路径
