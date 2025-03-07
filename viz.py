@@ -1,8 +1,6 @@
 from matplotlib import pyplot as plt
 import toml
 import autograd.numpy as npa
-from ceviche.jacobians import jacobian
-from ceviche.optimizers import adam_optimize
 from dataset_chi import decode_output, encode_input, encode_output
 from layer import Layer
 import time
@@ -88,27 +86,25 @@ if __name__ == "__main__":
     num_masks = len(masks)
 
     # plot
+    os.makedirs(f"{save_load_config['save_path']}/{t}/epochs_{0}", exist_ok=True)
+    for ndx in range(num_masks):
+        fig, ax = plt.subplots(1, num_layers, figsize=(4 * num_layers, 4))
+        # ax = ax.flatten(1)
 
-    def plot(save_load_config, t, epoch): 
-        os.makedirs(f"{save_load_config['save_path']}/{t}/epochs_{0}", exist_ok=True)
-        for ndx in range(num_masks):
-            fig, ax = plt.subplots(1, num_layers, figsize=(4 * num_layers, 4))
-            # ax = ax.flatten(1)
+        funcs = []
+        vmax_all = 0
 
-            funcs = []
-            vmax_all = 0
-
-            tmp = masks[ndx]
-            for idx in range(num_layers):
-                print(tmp)
-                tmp, vmax, func = layers[idx].viz_abs(tmp, ax=ax[idx])
-                funcs.append(func)
-                vmax_all = max(vmax_all, vmax)
+        tmp = masks[ndx]
+        for idx in range(num_layers):
             print(tmp)
+            tmp, vmax, func = layers[idx].viz_abs(tmp, ax=ax[idx])
+            funcs.append(func)
+            vmax_all = max(vmax_all, vmax)
+        print(tmp)
 
-            for func in funcs:
-                func(vmax_all)
+        for func in funcs:
+            func(vmax_all)
 
-            # save
-            plt.savefig(f"{save_load_config['save_path']}/{t}/epochs_{0}/{inputs[ndx]}_{ouputs[ndx]}.png")
-            plt.close(fig)
+        # save
+        plt.savefig(f"{save_load_config['save_path']}/{t}/epochs_{0}/{inputs[ndx]}_{ouputs[ndx]}.png")
+        plt.close(fig)

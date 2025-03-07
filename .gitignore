@@ -1,4 +1,7 @@
 __pycache__/
 models/
 mnt/
+log/
 .stfolder
+.venv
+.vscode

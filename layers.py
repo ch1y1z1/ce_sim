@@ -91,8 +91,8 @@ if __name__ == "__main__":
         
         if idx % save_load_config["viz_freq"] == 0:
             rhos = rhos.reshape((len(layers), -1))
-            for idx in range(num_layers):
-                layers[idx].use_rho(rhos[idx])
+            for ndx in range(num_layers):
+                layers[ndx].use_rho(rhos[ndx])
             os.makedirs(f"{save_load_config['save_path']}/{t}/epochs_{idx}", exist_ok=True)
             for ndx in range(num_masks):
                 fig, ax = plt.subplots(1, num_layers, figsize=(4 * num_layers, 4))
@@ -108,7 +108,6 @@ if __name__ == "__main__":
                     funcs.append(func)
                     vmax_all = max(vmax_all, vmax)
                 # print(tmp)
-
                 for func in funcs:
                     func(vmax_all)
 
