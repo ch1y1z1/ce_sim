@@ -1,30 +1,39 @@
 from typing import List
-from matplotlib import pyplot as plt
+
+import jax
 import toml
 import basis_generator_chi as bgc
-import numpy as np
 
 import ceviche
 from ceviche.fdfd import fdfd_ez
-from ceviche.jacobians import jacobian
 from ceviche.modes import insert_mode
 
-import autograd.numpy as npa
-from ceviche.optimizers import adam_optimize
 
 import matplotlib as mpl
+import matplotlib.pyplot as plt
+
+import numpy as np
+
+
+import jax.numpy as jnp
+import flax.nnx
+from flax import nnx
+import agjax
+
+import functools
 
 mpl.rcParams["font.family"] = "sans-serif"
+jax.config.update("jax_enable_x64", True)
 
 
 def sigmoid_b(E1, E0, basic):
     x = -(E1 - E0) * basic["alpha"]
-    return 1 / (1 + npa.exp(x))
+    return 1 / (1 + jnp.exp(x))
 
 
 def mode_overlap(E1, E2):
     """Defines an overlap integral between the simulated field and desired field"""
-    return npa.abs(npa.sum(npa.conj(E1) * E2))
+    return jnp.abs(jnp.sum(jnp.conj(E1) * E2))
 
 
 def prepare_io(omega, resolution, input_list, output_list, epsr_total, m=1):
@@ -35,14 +44,14 @@ def prepare_io(omega, resolution, input_list, output_list, epsr_total, m=1):
 
     probes = []
     for point in output_list:
-        probe = np.zeros(epsr_total.shape, dtype=np.complex128)
+        probe = np.zeros(epsr_total.shape, dtype=complex)
         probe[point["x"], point["y"]] = 1
         probes.append(probe)
 
     return ics, probes
 
 
-class Layer:
+class Layer(flax.nnx.Module):
     def __init__(self, grid, input, output, basic):
         # n_bits_o = output["n_bits"]
         # grid["ny"] = int(256 / 9 * (2 * n_bits_o + 1))
@@ -50,7 +59,7 @@ class Layer:
         self.rho, self.bg_rho, self.opt_region, self.input_list, self.output_list = (
             bgc.init_layer(grid, input, output)
         )
-        omega = 2 * np.pi * basic["freq"]
+        omega = 2 * jnp.pi * basic["freq"]
 
         self.grid = grid
         self.basic = basic
@@ -81,12 +90,17 @@ class Layer:
         ic_total = 0
         for ic in self.ics:
             ic_total += ic
-        _, _, Ez0 = self.simulation.solve(ic_total)
+        EE10, EE20, Ez0 = self.simulation.solve(ic_total)
         for probe in self.probes:
             E0 = mode_overlap(Ez0, probe)
             self.E0s.append(E0 / 2 * basic["E0_scale"])
 
-    def objective(self, rho, masks: List[npa.ndarray]) -> List[npa.ndarray]:
+        self.rho_jax = flax.nnx.Param(self.rho)
+
+    @functools.partial(
+        agjax.wrap_for_jax, nondiff_argnums=(0, 2,)
+    )
+    def solve(self, rho, source):
         rho = rho.reshape((self.grid["nx"], self.grid["ny"]))
         self.simulation.eps_r = bgc.epsr_parameterization(
             rho,
@@ -95,22 +109,25 @@ class Layer:
             self.basic["epsilon_min"],
             self.basic["epsilon_max"],
         )
+        _, _, Ez = self.simulation.solve(source)
+        return Ez
 
+    def __call__(self, masks: jnp.ndarray) -> List[jnp.ndarray]:
         Ezs = []
         for mask in masks:
-            source = npa.sum(mask[:, None, None] * npa.array(self.ics), axis=0)
-            _, _, Ez = self.simulation.solve(source)
+            source = jnp.sum(mask[:, None, None] * jnp.array(self.ics), axis=0)
+            Ez = self.solve(self.rho_jax.value, source)
             Ezs.append(Ez)
 
         a_list = []
-        for idx in range(len(masks)):
+        for mdx in range(len(masks)):
             output_mask = []
             for i in range(len(self.probes)):
                 a = sigmoid_b(
-                    mode_overlap(Ezs[idx], self.probes[i]), self.E0s[i], self.basic
+                    mode_overlap(Ezs[mdx], self.probes[i]), self.E0s[i], self.basic
                 )
                 output_mask.append(a)
-            a_list.append(npa.array(output_mask))
+            a_list.append(jnp.array(output_mask))
 
         return a_list
 
@@ -118,16 +135,9 @@ class Layer:
         self.rho = rho.reshape((self.bg_rho.shape[0], self.bg_rho.shape[1]))
 
     def viz_abs(self, mask, ax):
-        self.simulation.eps_r = bgc.epsr_parameterization(
-            self.rho,
-            self.bg_rho,
-            self.opt_region,
-            self.basic["epsilon_min"],
-            self.basic["epsilon_max"],
-        )
         # reshape mask to match the dimensions of the input list for broadcasting
-        source = npa.sum(mask[:, None, None] * npa.array(self.ics), axis=0)
-        _, _, Ez = self.simulation.solve(source)
+        source = jnp.sum(mask[:, None, None] * jnp.array(self.ics), axis=0)
+        Ez = self.solve(self.rho_jax.value, source)
 
         output_mask = []
         for i in range(len(self.probes)):
@@ -136,7 +146,7 @@ class Layer:
 
         # ceviche.viz.abs(Ez, outline=self.epsr_total, ax=ax, cbar=False)
         for idx, point in enumerate(self.input_list):
-            ax.plot(point["x"] * np.ones(len(point["y"])), point["y"], "w-", alpha=0.5)
+            ax.plot(point["x"] * jnp.ones(len(point["y"])), point["y"], "w-", alpha=0.5)
             ax.text(
                 point["x"] - 40,
                 point["y"][len(point["y"]) // 2],
@@ -145,7 +155,7 @@ class Layer:
                 va="center",
             )
         for idx, point in enumerate(self.output_list):
-            ax.plot(point["x"] * np.ones(len(point["y"])), point["y"], "w-", alpha=0.5)
+            ax.plot(point["x"] * jnp.ones(len(point["y"])), point["y"], "w-", alpha=0.5)
             ax.text(
                 point["x"] + 40,
                 point["y"][len(point["y"]) // 2],
@@ -155,8 +165,8 @@ class Layer:
             )
 
         return (
-            np.array(output_mask),
-            npa.max(npa.abs(Ez)),
+            jnp.array(output_mask),
+            jnp.max(jnp.abs(Ez)),
             lambda vmax: (
                 ceviche.viz.abs(
                     Ez, outline=self.epsr_total, ax=ax, cbar=False, vmax=vmax
@@ -172,46 +182,69 @@ class Layer:
 
 
 if __name__ == "__main__":
-    config = "./Configuration/chi_config.toml"
+    config = "./Configuration/2bit.toml"
     config = toml.load(config)
     train_config = config["train"]
     layer = config["layers"][0]
     la = Layer(config["grid"], layer["input"], layer["output"], config["basic"])
 
     # prepare dataset:
-    masks = [
-        npa.array([0, 1, 0, 1]),
-        npa.array([0, 1, 1, 0]),
-        npa.array([1, 0, 0, 1]),
-        npa.array([1, 0, 1, 0]),
-    ]
+    masks = jnp.array([
+        jnp.array([0, 1, 0, 1]),
+        jnp.array([0, 1, 1, 0]),
+        jnp.array([1, 0, 0, 1]),
+        jnp.array([1, 0, 1, 0]),
+    ])
     expected_output = [
-        npa.array([1, 1]),
-        npa.array([0, 0]),
-        npa.array([1, 0]),
-        npa.array([0, 1]),
+        jnp.array([1, 1]),
+        jnp.array([0, 0]),
+        jnp.array([1, 0]),
+        jnp.array([0, 1]),
     ]
 
-    def obj(rho):
-        predict = la.objective(rho, masks)
-        mse = npa.mean((npa.array(predict) - npa.array(expected_output)) ** 2, axis=1)
-        return npa.sum(mse)
+    ret = la(masks)
+    print(ret)
 
-    obj_jac = jacobian(obj, mode="reverse")
+    import optax
 
-    (rho_optimum, loss) = adam_optimize(
-        obj,
-        la.rho.flatten(),
-        obj_jac,
-        Nsteps=train_config["num_epochs"],
-        direction="min",
-        step_size=train_config["step_size"],
+    learning_rate = 0.03
+    momentum = 0.9
+
+    optimizer = flax.nnx.Optimizer(la, optax.adamw(learning_rate, momentum))
+    metrics = nnx.MultiMetric(
+        loss=nnx.metrics.Average('loss'),
     )
-    la.use_rho(rho_optimum)
+
+
+    # flax.nnx.display(optimizer)
+
+
+    def loss_fn(model: Layer, masks):
+        out = model(masks)
+        mse = jnp.sum(jnp.mean((jnp.array(out) - jnp.array(expected_output)) ** 2, axis=1))
+        return mse
+
+
+    # @flax.nnx.jit
+    def train_step(model: Layer, optimizer: flax.nnx.Optimizer, metrics: flax.nnx.MultiMetric, batch):
+        """Train for a single step."""
+        grad_fn = nnx.value_and_grad(loss_fn)
+        mse, grads = grad_fn(model, batch)
+        metrics.update(loss=mse)  # In-place updates.
+        optimizer.update(grads)  # In-place updates.
+
+
+    epochs = 10
+    for idx in range(epochs):
+        train_step(la, optimizer, metrics, masks)
+        print(f'loss: {metrics.compute()["loss"]}')
+        metrics.reset()
 
     fig, ax = plt.subplots(2, 2)
-    la.viz_abs(masks[0], ax=ax[0, 0])
-    la.viz_abs(masks[1], ax=ax[1, 0])
-    la.viz_abs(masks[2], ax=ax[0, 1])
-    la.viz_abs(masks[3], ax=ax[1, 1])
+    _, vm1, fn1 = la.viz_abs(masks[0], ax=ax[0, 0])
+    _, vm2, fn2 = la.viz_abs(masks[1], ax=ax[1, 0])
+    _, vm3, fn3 = la.viz_abs(masks[2], ax=ax[0, 1])
+    _, vm4, fn4 = la.viz_abs(masks[3], ax=ax[1, 1])
+    vm = np.max(np.array([vm1, vm2, vm3, vm4]))
+    fn1(vm), fn2(vm), fn3(vm), fn4(vm)
     plt.show()
