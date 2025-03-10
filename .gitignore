@@ -5,3 +5,5 @@ log/
 .stfolder
 .venv
 .vscode
+.idea
+*.pyc

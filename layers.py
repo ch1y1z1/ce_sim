@@ -51,7 +51,7 @@ if __name__ == "__main__":
     num_masks = len(masks)
     expected_output = list(map(lambda x: encode_output(n_bits, x), ouputs))
 
-    def obj(rhos):
+    def obj(rhos: npa.ndarray):
         rhos = rhos.reshape((num_layers, -1))
         tmp = masks
         for layer, rho in zip(layers, rhos):
