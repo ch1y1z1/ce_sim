@@ -41,7 +41,7 @@ proj_beta = 100.0  # 投影参数β（控制陡度）
 proj_eta = 0.5     # 投影参数η（阈值位置）
 num_proj = 1       # 投影操作次数
 num_conv = 1       # 卷积操作次数
-E0_scale = 3.0     # Ez0的缩放因子
+E0_scale = 1.0     # Ez0的缩放因子
 
 [train]
 step_size = 0.003     # 优化步长

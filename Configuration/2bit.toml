@@ -22,6 +22,12 @@ n_bits = 4 # 输入端口比特数
 [layers.output]
 n_bits = 2 # 输出端口比特数
 
+[[layers]]
+[layers.input]
+n_bits = 2 # 输入端口比特数
+[layers.output]
+n_bits = 2 # 输出端口比特数
+
 [basic]
 epsilon_min = 1.0  # 最小介电常数（空气）
 epsilon_max = 12.0 # 最大介电常数（硅）
@@ -33,14 +39,14 @@ proj_beta = 100.0  # 投影参数β（控制陡度）
 proj_eta = 0.5     # 投影参数η（阈值位置）
 num_proj = 1       # 投影操作次数
 num_conv = 1       # 卷积操作次数
-E0_scale = 3.0     # Ez0的缩放因子
+E0_scale = 1     # Ez0的缩放因子
 
 [train]
 step_size = 0.003     # 优化步长
 test_batch_size = 32  # 测试批次大小
 train_batch_size = 32 # 训练批次大小 
 num_epochs = 10       # 训练轮数
-penalty_factor = 1    # 惩罚因子（用于约束违反）
+penalty_factor = 1.5    # 惩罚因子（用于约束违反）
 
 [save_load]
 # save_pics = true

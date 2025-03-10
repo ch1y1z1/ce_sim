@@ -8,12 +8,10 @@ import ceviche
 from ceviche.fdfd import fdfd_ez
 from ceviche.modes import insert_mode
 
-
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 import numpy as np
-
 
 import jax.numpy as jnp
 import flax.nnx
@@ -90,7 +88,7 @@ class Layer(flax.nnx.Module):
         ic_total = 0
         for ic in self.ics:
             ic_total += ic
-        EE10, EE20, Ez0 = self.simulation.solve(ic_total)
+        _, _, Ez0 = self.simulation.solve(ic_total)
         for probe in self.probes:
             E0 = mode_overlap(Ez0, probe)
             self.E0s.append(E0 / 2 * basic["E0_scale"])
@@ -217,7 +215,6 @@ if __name__ == "__main__":
 
 
     # flax.nnx.display(optimizer)
-
 
     def loss_fn(model: Layer, masks):
         out = model(masks)
