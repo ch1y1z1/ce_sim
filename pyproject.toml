@@ -11,4 +11,5 @@ dependencies = [
     "pyMKL",
     "scipy",
     "toml",
+    "loguru"
 ]

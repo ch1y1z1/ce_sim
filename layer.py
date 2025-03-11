@@ -1,3 +1,6 @@
+import os
+import pathlib
+from tempfile import TemporaryDirectory
 from typing import List
 
 import jax
@@ -17,6 +20,9 @@ import jax.numpy as jnp
 import flax.nnx
 from flax import nnx
 import agjax
+from flax.training import train_state
+
+import orbax.checkpoint as ocp
 
 import functools
 
@@ -96,7 +102,7 @@ class Layer(flax.nnx.Module):
         self.rho_jax = flax.nnx.Param(self.rho)
 
     @functools.partial(
-        agjax.wrap_for_jax, nondiff_argnums=(0, 2,)
+        agjax.wrap_for_jax, nondiff_argnums=(0,)
     )
     def solve(self, rho, source):
         rho = rho.reshape((self.grid["nx"], self.grid["ny"]))
@@ -110,7 +116,7 @@ class Layer(flax.nnx.Module):
         _, _, Ez = self.simulation.solve(source)
         return Ez
 
-    def __call__(self, masks: jnp.ndarray) -> List[jnp.ndarray]:
+    def __call__(self, masks: jnp.ndarray) -> jnp.ndarray:
         Ezs = []
         for mask in masks:
             source = jnp.sum(mask[:, None, None] * jnp.array(self.ics), axis=0)
@@ -127,7 +133,27 @@ class Layer(flax.nnx.Module):
                 output_mask.append(a)
             a_list.append(jnp.array(output_mask))
 
-        return a_list
+        return jnp.array(a_list)
+
+        # jax.vmap(
+        #
+        # )
+
+        # 对每个probe和每个Ez计算mode_overlap
+        # 使用vmap对probes向量化，再使用vmap对Ezs向量化
+        # overlaps = jax.vmap(
+        #     lambda Ez: jax.vmap(
+        #         lambda probe: mode_overlap(Ez, probe)
+        #     )(self.probes)
+        # )(Ezs)
+
+        # 对所有结果应用sigmoid_b函数
+        # 广播E0s以匹配overlaps的形状
+        # return jax.vmap(
+        #     lambda overlap_row: jax.vmap(
+        #         lambda overlap, E0: sigmoid_b(overlap, E0, self.basic)
+        #     )(overlap_row, jnp.array(self.E0s))
+        # )(overlaps)
 
     def use_rho(self, rho):
         self.rho = rho.reshape((self.bg_rho.shape[0], self.bg_rho.shape[1]))
@@ -231,12 +257,14 @@ if __name__ == "__main__":
         optimizer.update(grads)  # In-place updates.
 
 
-    epochs = 10
+    # train
+    epochs = 3
     for idx in range(epochs):
         train_step(la, optimizer, metrics, masks)
         print(f'loss: {metrics.compute()["loss"]}')
         metrics.reset()
 
+    # viz
     fig, ax = plt.subplots(2, 2)
     _, vm1, fn1 = la.viz_abs(masks[0], ax=ax[0, 0])
     _, vm2, fn2 = la.viz_abs(masks[1], ax=ax[1, 0])
@@ -245,3 +273,10 @@ if __name__ == "__main__":
     vm = np.max(np.array([vm1, vm2, vm3, vm4]))
     fn1(vm), fn2(vm), fn3(vm), fn4(vm)
     plt.show()
+
+    # save and load
+    # _, state = nnx.split(la)
+    #
+    # checkpointer = ocp.StandardCheckpointer()
+    # pwd = os.getcwd()
+    # checkpointer.save(f"{pwd}/models/state", state)
