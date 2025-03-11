@@ -1,8 +1,3 @@
-import os
-import pathlib
-from tempfile import TemporaryDirectory
-from typing import List
-
 import jax
 import toml
 import basis_generator_chi as bgc
@@ -20,9 +15,6 @@ import jax.numpy as jnp
 import flax.nnx
 from flax import nnx
 import agjax
-from flax.training import train_state
-
-import orbax.checkpoint as ocp
 
 import functools
 
@@ -240,8 +232,6 @@ if __name__ == "__main__":
     )
 
 
-    # flax.nnx.display(optimizer)
-
     def loss_fn(model: Layer, masks):
         out = model(masks)
         mse = jnp.sum(jnp.mean((jnp.array(out) - jnp.array(expected_output)) ** 2, axis=1))
@@ -274,9 +264,3 @@ if __name__ == "__main__":
     fn1(vm), fn2(vm), fn3(vm), fn4(vm)
     plt.show()
 
-    # save and load
-    # _, state = nnx.split(la)
-    #
-    # checkpointer = ocp.StandardCheckpointer()
-    # pwd = os.getcwd()
-    # checkpointer.save(f"{pwd}/models/state", state)

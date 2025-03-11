@@ -9,8 +9,6 @@
 #SBATCH --output=log/%j.out
 #SBATCH --error=log/%j.err
 
-module load miniconda3
-source activate
-conda activate ce
+source .venv/bin/activate
 
-python layers.py
+python train.py -j %j -f ./Configuration/6bit.toml
