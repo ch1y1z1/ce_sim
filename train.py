@@ -40,17 +40,31 @@ def main(
     logger.info(f"Starting training at {t} in {pwd}")
     logger.info(f"Saving to: {save_load_config['base_path']}/{t}")
 
-    model = CEmodel(config)
-    ckptr = ocp.AsyncCheckpointer(ocp.StandardCheckpointHandler())
+    ckptr = ocp.AsyncCheckpointer(ocp.PyTreeCheckpointHandler())
 
     if "load_path" in save_load_config:
-        logger.info(f"Loading model from: {save_load_config['load_path']}")
+        logger.info(
+            f"Loading model and optimizer from: {save_load_config['load_path']}"
+        )
+        model = CEmodel(config)
         graphdef, state = nnx.split(model)
-        state = ckptr.restore(f"{pwd}/{save_load_config['load_path']}", state)
+        state = ckptr.restore(f"{pwd}/{save_load_config['load_path']}/model", state)
         model = nnx.merge(graphdef, state)
 
+        # important: load optimizer state!
+        optimizer = nnx.Optimizer(model, optax.adamw(train_config["step_size"]))
+        graphdef, state = nnx.split(optimizer)
+        state = ckptr.restore(f"{pwd}/{save_load_config['load_path']}/optimizer", state)
+        optimizer = nnx.merge(graphdef, state)
+        # FIX:
+        optimizer.model = model
+
+    else:
+        logger.info("Initializing model from scratch")
+        model = CEmodel(config)
+        optimizer = nnx.Optimizer(model, optax.adamw(train_config["step_size"]))
+
     n_bit, masks, expected_output, raw_i, raw_o = prepare_io_dataset(config["dataset"])
-    optimizer = nnx.Optimizer(model, optax.adamw(train_config["step_size"], 0.9))
 
     def loss_fn(model, masks):
         pred = model(masks)
@@ -79,8 +93,15 @@ def main(
         ):
             _, state = nnx.split(model)
             ckptr.save(
-                f"{pwd}/{save_load_config['base_path']}/{t}/models/epoch_{epoch}",
-                args=ocp.args.StandardSave(state),
+                f"{pwd}/{save_load_config['base_path']}/{t}/models/epoch_{epoch}/model",
+                # args=ocp.args.StandardSave(state),
+                args=ocp.args.PyTreeSave(state),
+            )
+            # important: save the optimizer state as well
+            _, state = nnx.split(optimizer)
+            ckptr.save(
+                f"{pwd}/{save_load_config['base_path']}/{t}/models/epoch_{epoch}/optimizer",
+                args=ocp.args.PyTreeSave(state),
             )
 
         if (
