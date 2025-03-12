@@ -33,7 +33,7 @@ class CEmodel(nnx.Module):
         funcs = []
         vmax_all = 0
         tmp = mask
-        for (idx, layer) in enumerate(self.layers):
+        for idx, layer in enumerate(self.layers):
             if verbose:
                 print(tmp)
             tmp, vmax, func = layer.viz_abs(tmp, ax=ax[idx])
@@ -53,12 +53,16 @@ if __name__ == "__main__":
     config = toml.load(config_file)
     model = CEmodel(config)
 
-    print(model(
-        jnp.array([
-            [1, 0, 0, 1],
-            [0, 1, 0, 1],
-        ])
-    ))
+    print(
+        model(
+            jnp.array(
+                [
+                    [1, 0, 0, 1],
+                    [0, 1, 0, 1],
+                ]
+            )
+        )
+    )
 
     model.viz_abs(jnp.array([1, 0, 0, 1]))
     plt.show()
