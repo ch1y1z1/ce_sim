@@ -8,10 +8,11 @@ from model import CEmodel
 import orbax.checkpoint as ocp
 from flax import nnx
 from loguru import logger
-from dataset import prepare_io_dataset
+from dataset import prepare_io_dataset, decode_output
 import optax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+import jax
 
 
 app = typer.Typer()
@@ -51,34 +52,34 @@ def main(
 
     def loss_fn(model, masks):
         pred = model(masks)
-        return jnp.sum((pred - expected_output) ** 2)
+        return jnp.sum((pred - expected_output) ** 2), pred
 
     def train_step(model, optimizer, masks):
-        grad_fn = nnx.value_and_grad(loss_fn)
-        mse, grads = grad_fn(model, masks)
+        grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
+        (mse, pred), grads = grad_fn(model, masks)
+        pred_01 = jnp.where(pred > 0.5, 1.0, 0.0)
+        pred_label = jax.vmap(decode_output)(pred_01)
+        accu = jnp.mean(pred_label == raw_o                                                                                                                                                                                                                                                                  .astype(int))
         optimizer.update(grads)
-        return mse
+        return mse, accu
 
     for epoch in range(train_config["num_epochs"]):
         t_start = time.time()
-        mse = train_step(model, optimizer, masks)
+        mse, accu = train_step(model, optimizer, masks)
         t_elapsed = time.time() - t_start
-        logger.info(f"Epoch {epoch + 1}/{train_config['num_epochs']}, MSE: {mse}, Time: {t_elapsed}s")
+        logger.info(f"Epoch {epoch}/{train_config['num_epochs']}, MSE: {mse}, Accu: {accu}, Time: {t_elapsed}s")
 
-        if save_load_config["save"] == True and epoch % save_load_config["save_interval"] == 0:
+        if save_load_config["save"] == True and (epoch - 1) % save_load_config["save_interval"] == 0:
             _, state = nnx.split(model)
-            ckptr.save(f"{pwd}/{save_load_config['base_path']}/{t}/models/epoch_{epoch + 1}", args=ocp.args.StandardSave(state))
+            ckptr.save(f"{pwd}/{save_load_config['base_path']}/{t}/models/epoch_{epoch}", args=ocp.args.StandardSave(state))
 
-        if "viz_interval" in save_load_config and epoch % save_load_config["viz_interval"] == 0:
-            os.makedirs(f"{save_load_config['base_path']}/{t}/viz/epoch_{epoch + 1}", exist_ok=True)
+        if "viz_interval" in save_load_config and (epoch - 1) % save_load_config["viz_interval"] == 0:
+            os.makedirs(f"{save_load_config['base_path']}/{t}/viz/epoch_{epoch}", exist_ok=True)
             for ndx, mask in enumerate(masks):
                 fig, _ = model.viz_abs(mask)
                 # save
-                plt.savefig(f"{save_load_config['base_path']}/{t}/viz/epoch_{epoch + 1}/{raw_i[ndx]}_{raw_o[ndx]}.png")
+                plt.savefig(f"{save_load_config['base_path']}/{t}/viz/epoch_{epoch}/{raw_i[ndx]}_{raw_o[ndx]}.png")
                 plt.close(fig)
 
 if __name__ == "__main__":
     app()
-    # main(
-    #     config_file="./Configuration/2bit.toml"
-    # )

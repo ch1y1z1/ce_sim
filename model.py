@@ -13,7 +13,7 @@ class CEmodel(nnx.Module):
         self.layers = []
         for layer_config in layers_config:
             layer = Layer(
-                config["grid"],
+                config["grid"].copy(),
                 layer_config["input"],
                 layer_config["output"],
                 config["basic"],
@@ -28,7 +28,7 @@ class CEmodel(nnx.Module):
 
     def viz_abs(self, mask, verbose=False):
         num_layers = len(self.layers)
-        fig, ax = plt.subplots(1, num_layers, figsize=(4 * num_layers, 4))
+        fig, ax = plt.subplots(1, num_layers, figsize=(4 * num_layers, 6))
 
         funcs = []
         vmax_all = 0

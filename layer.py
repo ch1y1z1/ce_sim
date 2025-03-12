@@ -22,8 +22,8 @@ mpl.rcParams["font.family"] = "sans-serif"
 jax.config.update("jax_enable_x64", True)
 
 
-def sigmoid_b(E1, E0, basic):
-    x = -(E1 - E0) * basic["alpha"]
+def sigmoid_b(E1, E0, alpha):
+    x = -(E1 - E0) * alpha
     return 1 / (1 + jnp.exp(x))
 
 
@@ -49,9 +49,9 @@ def prepare_io(omega, resolution, input_list, output_list, epsr_total, m=1):
 
 class Layer(flax.nnx.Module):
     def __init__(self, grid, input, output, basic):
-        # n_bits_o = output["n_bits"]
-        # grid["ny"] = int(256 / 9 * (2 * n_bits_o + 1))
-        # grid["nx"] = int(208)
+        n_bits_i = input["n_bits"]
+        grid["ny"] = int(256 / 5 * (2 * n_bits_i + 1))
+        grid["nx"] = int(208)
         self.rho, self.bg_rho, self.opt_region, self.input_list, self.output_list = (
             bgc.init_layer(grid, input, output)
         )
@@ -81,8 +81,6 @@ class Layer(flax.nnx.Module):
         )
 
         self.E0s = []
-        # TODO: this is not accurate
-
         ic_total = 0
         for ic in self.ics:
             ic_total += ic
@@ -92,6 +90,7 @@ class Layer(flax.nnx.Module):
             self.E0s.append(E0 / 2 * basic["E0_scale"])
 
         self.rho_jax = flax.nnx.Param(self.rho)
+        self.alpha = flax.nnx.Param(basic["alpha"])
 
     @functools.partial(
         agjax.wrap_for_jax, nondiff_argnums=(0,)
@@ -120,32 +119,12 @@ class Layer(flax.nnx.Module):
             output_mask = []
             for i in range(len(self.probes)):
                 a = sigmoid_b(
-                    mode_overlap(Ezs[mdx], self.probes[i]), self.E0s[i], self.basic
+                    mode_overlap(Ezs[mdx], self.probes[i]), self.E0s[i], self.alpha.value
                 )
                 output_mask.append(a)
             a_list.append(jnp.array(output_mask))
 
         return jnp.array(a_list)
-
-        # jax.vmap(
-        #
-        # )
-
-        # 对每个probe和每个Ez计算mode_overlap
-        # 使用vmap对probes向量化，再使用vmap对Ezs向量化
-        # overlaps = jax.vmap(
-        #     lambda Ez: jax.vmap(
-        #         lambda probe: mode_overlap(Ez, probe)
-        #     )(self.probes)
-        # )(Ezs)
-
-        # 对所有结果应用sigmoid_b函数
-        # 广播E0s以匹配overlaps的形状
-        # return jax.vmap(
-        #     lambda overlap_row: jax.vmap(
-        #         lambda overlap, E0: sigmoid_b(overlap, E0, self.basic)
-        #     )(overlap_row, jnp.array(self.E0s))
-        # )(overlaps)
 
     def use_rho(self, rho):
         self.rho = rho.reshape((self.bg_rho.shape[0], self.bg_rho.shape[1]))
@@ -157,7 +136,7 @@ class Layer(flax.nnx.Module):
 
         output_mask = []
         for i in range(len(self.probes)):
-            a = sigmoid_b(mode_overlap(Ez, self.probes[i]), self.E0s[i], self.basic)
+            a = sigmoid_b(mode_overlap(Ez, self.probes[i]), self.E0s[i], self.alpha.value)
             output_mask.append(a)
 
         # ceviche.viz.abs(Ez, outline=self.epsr_total, ax=ax, cbar=False)
@@ -263,4 +242,3 @@ if __name__ == "__main__":
     vm = np.max(np.array([vm1, vm2, vm3, vm4]))
     fn1(vm), fn2(vm), fn3(vm), fn4(vm)
     plt.show()
-

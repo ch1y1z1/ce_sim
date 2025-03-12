@@ -35,16 +35,20 @@ def decode_output(r):
     indices = np.arange(0, length, 1)
     arr = 2 ** (indices)
     arr = arr[::-1]
-    return int(np.sum(arr * r))
+    return np.sum(arr * r).astype(int)
 
 
 def prepare_io_dataset(dataset_config):
     inputs = dataset_config["input"]
     if type(inputs) is str:
         inputs = np.load(inputs).tolist()
+    else:
+        inputs = np.array(inputs)
     ouputs = dataset_config["output"]
     if type(ouputs) is str:
         ouputs = np.load(ouputs).tolist()
+    else:
+        ouputs = np.array(ouputs)
     n_bits = dataset_config["n_bits"]
     masks = np.array(list(map(lambda x: encode_input(n_bits, x), inputs)))
     num_masks = len(masks)
