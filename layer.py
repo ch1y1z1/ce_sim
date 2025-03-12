@@ -50,8 +50,8 @@ def prepare_io(omega, resolution, input_list, output_list, epsr_total, m=1):
 class Layer(flax.nnx.Module):
     def __init__(self, grid, input, output, basic):
         n_bits_i = input["n_bits"]
-        grid["ny"] = int(256 / 5 * (2 * n_bits_i + 1))
-        grid["nx"] = int(208)
+        grid["ny"] = int(288 / 25 * (2 * n_bits_i + 1))
+        grid["nx"] = int(144)
         self.rho, self.bg_rho, self.opt_region, self.input_list, self.output_list = (
             bgc.init_layer(grid, input, output)
         )
@@ -92,9 +92,7 @@ class Layer(flax.nnx.Module):
         self.rho_jax = flax.nnx.Param(self.rho)
         self.alpha = flax.nnx.Param(basic["alpha"])
 
-    @functools.partial(
-        agjax.wrap_for_jax, nondiff_argnums=(0,)
-    )
+    @functools.partial(agjax.wrap_for_jax, nondiff_argnums=(0,))
     def solve(self, rho, source):
         rho = rho.reshape((self.grid["nx"], self.grid["ny"]))
         self.simulation.eps_r = bgc.epsr_parameterization(
@@ -119,7 +117,9 @@ class Layer(flax.nnx.Module):
             output_mask = []
             for i in range(len(self.probes)):
                 a = sigmoid_b(
-                    mode_overlap(Ezs[mdx], self.probes[i]), self.E0s[i], self.alpha.value
+                    mode_overlap(Ezs[mdx], self.probes[i]),
+                    self.E0s[i],
+                    self.alpha.value,
                 )
                 output_mask.append(a)
             a_list.append(jnp.array(output_mask))
@@ -136,7 +136,9 @@ class Layer(flax.nnx.Module):
 
         output_mask = []
         for i in range(len(self.probes)):
-            a = sigmoid_b(mode_overlap(Ez, self.probes[i]), self.E0s[i], self.alpha.value)
+            a = sigmoid_b(
+                mode_overlap(Ez, self.probes[i]), self.E0s[i], self.alpha.value
+            )
             output_mask.append(a)
 
         # ceviche.viz.abs(Ez, outline=self.epsr_total, ax=ax, cbar=False)
@@ -184,12 +186,14 @@ if __name__ == "__main__":
     la = Layer(config["grid"], layer["input"], layer["output"], config["basic"])
 
     # prepare dataset:
-    masks = jnp.array([
-        jnp.array([0, 1, 0, 1]),
-        jnp.array([0, 1, 1, 0]),
-        jnp.array([1, 0, 0, 1]),
-        jnp.array([1, 0, 1, 0]),
-    ])
+    masks = jnp.array(
+        [
+            jnp.array([0, 1, 0, 1]),
+            jnp.array([0, 1, 1, 0]),
+            jnp.array([1, 0, 0, 1]),
+            jnp.array([1, 0, 1, 0]),
+        ]
+    )
     expected_output = [
         jnp.array([1, 1]),
         jnp.array([0, 0]),
@@ -207,30 +211,34 @@ if __name__ == "__main__":
 
     optimizer = flax.nnx.Optimizer(la, optax.adamw(learning_rate, momentum))
     metrics = nnx.MultiMetric(
-        loss=nnx.metrics.Average('loss'),
+        loss=nnx.metrics.Average("loss"),
     )
-
 
     def loss_fn(model: Layer, masks):
         out = model(masks)
-        mse = jnp.sum(jnp.mean((jnp.array(out) - jnp.array(expected_output)) ** 2, axis=1))
+        mse = jnp.sum(
+            jnp.mean((jnp.array(out) - jnp.array(expected_output)) ** 2, axis=1)
+        )
         return mse
 
-
     # @flax.nnx.jit
-    def train_step(model: Layer, optimizer: flax.nnx.Optimizer, metrics: flax.nnx.MultiMetric, batch):
+    def train_step(
+        model: Layer,
+        optimizer: flax.nnx.Optimizer,
+        metrics: flax.nnx.MultiMetric,
+        batch,
+    ):
         """Train for a single step."""
         grad_fn = nnx.value_and_grad(loss_fn)
         mse, grads = grad_fn(model, batch)
         metrics.update(loss=mse)  # In-place updates.
         optimizer.update(grads)  # In-place updates.
 
-
     # train
     epochs = 3
     for idx in range(epochs):
         train_step(la, optimizer, metrics, masks)
-        print(f'loss: {metrics.compute()["loss"]}')
+        print(f"loss: {metrics.compute()['loss']}")
         metrics.reset()
 
     # viz

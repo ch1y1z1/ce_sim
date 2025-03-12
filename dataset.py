@@ -41,12 +41,12 @@ def decode_output(r):
 def prepare_io_dataset(dataset_config):
     inputs = dataset_config["input"]
     if type(inputs) is str:
-        inputs = np.load(inputs).tolist()
+        inputs = np.load(inputs)
     else:
         inputs = np.array(inputs)
     ouputs = dataset_config["output"]
     if type(ouputs) is str:
-        ouputs = np.load(ouputs).tolist()
+        ouputs = np.load(ouputs)
     else:
         ouputs = np.array(ouputs)
     n_bits = dataset_config["n_bits"]
@@ -60,21 +60,21 @@ def prepare_io_dataset(dataset_config):
 if __name__ == "__main__":
     # test
     n_bits = 2
-    for num in range(2 ** n_bits):
+    for num in range(2**n_bits):
         print(
             f"{num}: {encode_input(n_bits, num)}: {decode_input(encode_input(n_bits, num))}"
         )
-    for num in range(2 ** n_bits):
+    for num in range(2**n_bits):
         print(
             f"{num}: {encode_output(n_bits, num)}: {decode_output(encode_output(n_bits, num))}"
         )
 
     n_bits = 3
-    for num in range(2 ** n_bits):
+    for num in range(2**n_bits):
         print(
             f"{num}: {encode_input(n_bits, num)}: {decode_input(encode_input(n_bits, num))}"
         )
-    for num in range(2 ** n_bits):
+    for num in range(2**n_bits):
         print(
             f"{num}: {encode_output(n_bits, num)}: {decode_output(encode_output(n_bits, num))}"
         )
