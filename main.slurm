@@ -11,4 +11,4 @@
 
 source .venv/bin/activate
 
-python train.py -j %j -f ./Configuration/6bit.toml
+python train.py -j $SLURM_JOB_ID -f ./Configuration/6bit.toml
