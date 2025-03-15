@@ -1,6 +1,6 @@
 import os
 import shutil
-from typing import Annotated
+from typing import Annotated, Optional
 import typer
 import time
 import toml
@@ -23,7 +23,7 @@ def main(
     config_file: Annotated[
         str, typer.Option("--file", "-f")
     ] = "./Configuration/2bit.toml",
-    job_id: Annotated[str, typer.Option("--job-id", "-j")] = None,
+    job_id: Annotated[Optional[str], typer.Option("--job-id", "-j")] = None,
 ):
     config = toml.load(config_file)
     train_config = config["train"]
