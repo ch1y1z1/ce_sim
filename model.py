@@ -8,7 +8,19 @@ import matplotlib.pyplot as plt
 
 
 class CEmodel(nnx.Module):
+    """复合电磁场模拟模型
+    
+    由多个Layer组成的级联结构
+    
+    属性：
+        layers：Layer实例列表
+    """
     def __init__(self, config):
+        """根据配置文件初始化多层结构
+        
+        参数：
+            config：配置文件字典
+        """
         layers_config = config["layers"]
         self.layers = []
         for layer_config in layers_config:
@@ -21,12 +33,30 @@ class CEmodel(nnx.Module):
             self.layers.append(layer)
 
     def __call__(self, masks: jnp.ndarray):
+        """前向传播
+        
+        参数：
+            masks：输入掩码向量
+        
+        返回：
+            输出向量
+        """
         tmp = masks
         for layer in self.layers:
             tmp = layer(tmp)
         return tmp
 
     def viz_abs(self, mask, verbose=False):
+        """可视化各层电磁场分布
+        
+        参数：
+            mask：输入掩码向量
+            verbose：是否打印调试信息
+        
+        返回：
+            fig：matplotlib图像对象
+            ax：matplotlib轴对象
+        """
         num_layers = len(self.layers)
         fig, ax = plt.subplots(1, num_layers, figsize=(4 * num_layers, 6))
 
