@@ -62,13 +62,16 @@ def main(
     else:
         logger.info("Initializing model from scratch")
         model = CEmodel(config)
+        logger.info(
+            f"Initializing optimizer with step size: {train_config['step_size']}"
+        )
         optimizer = nnx.Optimizer(model, optax.adamw(train_config["step_size"]))
 
     n_bit, masks, expected_output, raw_i, raw_o = prepare_io_dataset(config["dataset"])
 
     def loss_fn(model, masks):
         pred = model(masks)
-        return jnp.sum((pred - expected_output) ** 2), pred
+        return jnp.mean(jnp.sum((pred - expected_output) ** 2, axis=1)), pred
 
     def train_step(model, optimizer, masks):
         grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)

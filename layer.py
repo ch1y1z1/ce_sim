@@ -50,8 +50,8 @@ def prepare_io(omega, resolution, input_list, output_list, epsr_total, m=1):
 class Layer(flax.nnx.Module):
     def __init__(self, grid, input, output, basic):
         n_bits_i = input["n_bits"]
-        grid["ny"] = int(288 / 25 * (2 * n_bits_i + 1))
-        grid["nx"] = int(128)
+        # grid["ny"] = int((288 - 20) / 25 * (2 * n_bits_i + 1) + 20)
+        # grid["nx"] = int(128)
         self.rho, self.bg_rho, self.opt_region, self.input_list, self.output_list = (
             bgc.init_layer(grid, input, output)
         )
@@ -89,9 +89,10 @@ class Layer(flax.nnx.Module):
             E0 = mode_overlap(Ez0, probe)
             self.E0s.append(E0 / 2 * basic["E0_scale"])
 
+        self.E0s_jax = flax.nnx.Param(jnp.array(self.E0s))
         self.rho_jax = flax.nnx.Param(self.rho)
-        # self.alpha = flax.nnx.Param(basic["alpha"])
-        self.alpha = basic["alpha"]
+        self.alpha = flax.nnx.Param(basic["alpha"])
+        # self.alpha = basic["alpha"]
 
     @functools.partial(agjax.wrap_for_jax, nondiff_argnums=(0,))
     def solve(self, rho, source):
@@ -107,6 +108,7 @@ class Layer(flax.nnx.Module):
         return Ez
 
     def __call__(self, masks: jnp.ndarray) -> jnp.ndarray:
+        # print(self.rho_jax.value)
         Ezs = []
         for mask in masks:
             source = jnp.sum(mask[:, None, None] * jnp.array(self.ics), axis=0)
@@ -119,8 +121,9 @@ class Layer(flax.nnx.Module):
             for i in range(len(self.probes)):
                 a = sigmoid_b(
                     mode_overlap(Ezs[mdx], self.probes[i]),
-                    self.E0s[i],
-                    self.alpha,
+                    # self.E0s[i],
+                    self.E0s_jax.value[i],
+                    self.alpha.value,
                 )
                 output_mask.append(a)
             a_list.append(jnp.array(output_mask))
@@ -137,7 +140,12 @@ class Layer(flax.nnx.Module):
 
         output_mask = []
         for i in range(len(self.probes)):
-            a = sigmoid_b(mode_overlap(Ez, self.probes[i]), self.E0s[i], self.alpha)
+            a = sigmoid_b(
+                mode_overlap(Ez, self.probes[i]),
+                # self.E0s[i],
+                self.E0s_jax.value[i],
+                self.alpha.value,
+            )
             output_mask.append(a)
 
         # ceviche.viz.abs(Ez, outline=self.epsr_total, ax=ax, cbar=False)

@@ -33,25 +33,25 @@ epsilon_min = 1.0  # 最小介电常数（空气）
 epsilon_max = 12.0 # 最大介电常数（硅）
 freq = 200e12      # 工作频率（200THz）
 kernel_radius = 2  # 卷积核半径（网格数）
-alpha = 3e5        # 优化目标函数权重系数
+alpha = 1e5        # 优化目标函数权重系数
 beta = 0.5         # 材料密度插值参数
 proj_beta = 100.0  # 投影参数β（控制陡度）
 proj_eta = 0.5     # 投影参数η（阈值位置）
 num_proj = 1       # 投影操作次数
 num_conv = 1       # 卷积操作次数
-E0_scale = 1     # Ez0的缩放因子
+E0_scale = 1       # Ez0的缩放因子
 
 [train]
-step_size = 0.003     # 优化步长
+step_size = 3e-6    # 优化步长
 test_batch_size = 32  # 测试批次大小
 train_batch_size = 32 # 训练批次大小 
 num_epochs = 10       # 训练轮数
-penalty_factor = 1.5    # 惩罚因子（用于约束违反）
+penalty_factor = 1.5  # 惩罚因子（用于约束违反）
 
 [save_load]
 base_path = "./models" # 保存和加载模型的路径
 # save_pics = true
 save = true
-save_interval = 2
-viz_interval = 2
+save_interval = 1
+viz_interval = 1
 #load_path = "./models/Wed Mar 12 01:39:06 2025/models/epoch_7" # 加载模型的路径
