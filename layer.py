@@ -83,6 +83,13 @@ class Layer(flax.nnx.Module):
         self.basic = basic
         self.simulation_config = simulation_config or {}
         self.backend_name = self.simulation_config.get("backend", "ceviche")
+        self.enable_batch = bool(
+            self.simulation_config.get(
+                "enable_batch",
+                self.backend_name == "fdfd_solver",
+            )
+        )
+        self.enable_batch = self.enable_batch and self.backend_name == "fdfd_solver"
 
         self.epsr_total = bgc.epsr_parameterization(
             self.rho,
@@ -99,6 +106,7 @@ class Layer(flax.nnx.Module):
             self.output_list,
             self.epsr_total,
         )
+        self.probes_arr = jnp.stack(self.probes, axis=0)
 
         self.simulation = build_simulation_backend(
             omega,
@@ -163,17 +171,26 @@ class Layer(flax.nnx.Module):
                 self.basic["epsilon_min"],
                 self.basic["epsilon_max"],
             )
-            _, _, Ezs = self.simulation.solve_batch(sources)
+
+            if self.enable_batch and hasattr(self.simulation, "solve_batch"):
+                _, _, Ezs = self.simulation.solve_batch(sources)
+            else:
+                Ezs = [self.simulation.solve(source)[2] for source in sources]
         else:
             Ezs = [self.solve(self.rho_jax.value, source) for source in sources]
 
-        # 计算每个Ez和每个probe的重叠
-        overlaps = jnp.array(
-            [[mode_overlap(Ez, probe) for probe in self.probes] for Ez in Ezs]
+        # 批量重叠积分: (B, nx, ny) x (P, nx, ny) -> (B, P)
+        Ezs_arr = jnp.asarray(Ezs)
+        overlaps = jnp.abs(
+            jnp.tensordot(
+                jnp.conj(Ezs_arr),
+                self.probes_arr,
+                axes=([1, 2], [1, 2]),
+            )
         )
         a_list = jax.nn.sigmoid(-(overlaps - jnp.array(self.E0s)) * self.alpha)
 
-        return jnp.array(a_list)
+        return a_list
 
     def use_rho(self, rho):
         """更新密度矩阵

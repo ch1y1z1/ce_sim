@@ -129,6 +129,7 @@ def main(
 
     # 获取训练配置
     train_config = config["train"]
+    enable_jit = bool(train_config.get("enable_jit", False))
     # 获取保存和加载配置
     save_load_config = config["save_load"]
 
@@ -152,6 +153,7 @@ def main(
         logger.info(f"Slurm 作业 ID: {job_id}")
     # 记录配置文件路径
     logger.info(f"配置文件: {config_file}")
+    logger.info(f"训练 JIT: {'开启' if enable_jit else '关闭'}")
     if applied_overrides:
         logger.info(f"命令行覆盖参数: {applied_overrides}")
     # 记录开始训练时间和工作目录
@@ -218,7 +220,7 @@ def main(
     # 返回：
     #   mse: 均方误差
     #   accu: 分类准确率
-    def train_step(model, optimizer, masks):
+    def train_step_impl(model, optimizer, masks):
         # 计算损失函数的梯度
         grad_fn = nnx.value_and_grad(loss_fn, has_aux=True)
         # 计算损失函数值和梯度
@@ -233,12 +235,23 @@ def main(
         # 返回均方误差和分类准确率
         return mse, accu
 
+    train_step = nnx.jit(train_step_impl) if enable_jit else train_step_impl
+
     # 训练模型
     for epoch in range(train_config["num_epochs"]):
         # 记录开始时间
         t_start = time.time()
         # 训练单步
-        mse, accu = train_step(model, optimizer, masks)
+        try:
+            mse, accu = train_step(model, optimizer, masks)
+        except Exception as exc:
+            if enable_jit:
+                logger.warning(f"JIT 执行失败，回退到非 JIT：{exc}")
+                enable_jit = False
+                train_step = train_step_impl
+                mse, accu = train_step(model, optimizer, masks)
+            else:
+                raise
         # 记录结束时间
         t_elapsed = time.time() - t_start
         # 记录训练信息

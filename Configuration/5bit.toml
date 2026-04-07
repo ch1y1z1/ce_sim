@@ -18,11 +18,8 @@ output = "./dataset/5bit/output.npy"
 
 [simulation]
 backend = "ceviche" # 可选: "ceviche" / "fdfd_solver"
-
-[simulation.fdfd_solver]
-single_solver = "spsolve"   # 单右端项求解器
-batch_factorize = "splu"    # 批量求解预分解器
-batch_solver = "solve"      # 使用分解结果求解
+enable_batch = false   # 是否启用批量求解（仅 fdfd_solver 生效）
+enable_symbolic_reuse = false # 是否复用符号分析与 LU 内存（仅 fdfd_solver 生效）
 
 [[layers]]
 [layers.input]

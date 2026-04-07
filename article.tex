@@ -1,0 +1,167 @@
+\chapter{反向设计中稀疏线性系统的高效求解}
+
+\section{引言}
+
+第二章的分析表明，光子集成电路反向设计的核心计算瓶颈在于稀疏线性方程组$\boldsymbol{A}\boldsymbol{x} = \boldsymbol{b}$的反复求解。在典型的基于伴随法的拓扑优化过程中，每步迭代需要进行正向仿真和伴随仿真各一次，且整个优化通常持续数百至上千步迭代，因此稀疏求解器的性能直接决定了设计流程的整体耗时。
+
+本章针对反向设计的计算特点，提出三种互补的稀疏线性系统求解加速策略。首先，利用优化迭代过程中系统矩阵$\boldsymbol{A}(\boldsymbol{p})$稀疏模式保持不变的特性，通过复用SuperLU求解器的符号分析结果来消除冗余计算。其次，利用单次迭代中多光源批量仿真共享同一系统矩阵的特性，通过单次LU分解服务于整批正向和伴随求解来摊薄分解开销。最后，引入SuperLU\_DIST分布式并行求解框架，利用多进程多线程的分块并行算法进一步提升大规模问题的求解性能。
+
+\section{SuperLU稀疏直接求解器}
+
+\subsection{算法概述}
+
+SuperLU是一族广泛使用的稀疏直接求解器软件包，由Li和Demmel等人开发\cite{Li2005}，专门针对非对称稀疏线性系统$\boldsymbol{A}\boldsymbol{x} = \boldsymbol{b}$的高效求解。SuperLU采用基于超节点（supernodal）的稀疏LU分解算法\cite{Demmel1999}，其核心思想是将LU因子中具有相同非零结构的相邻列聚合为超节点，将稀疏矩阵运算转化为密集子矩阵运算，从而充分利用现代处理器的缓存层次结构和高性能BLAS（Basic Linear Algebra Subprograms）库来提升计算效率。
+
+SuperLU求解稀疏线性系统的完整流程可分为以下四个阶段\cite{Li2005}：
+
+第一阶段，列置换（Column Permutation）。计算列置换矩阵$\boldsymbol{P}_c$，将原始矩阵$\boldsymbol{A}$的列重新排列为$\boldsymbol{A}\boldsymbol{P}_c$，目标是最小化LU因子$\boldsymbol{L}$和$\boldsymbol{U}$中的填充（fill-in），即减少分解过程中产生的新非零元素数量。常用的列排序算法包括近似最小度排序（Approximate Minimum Degree, AMD）和嵌套剖分排序（Nested Dissection）等。列置换阶段仅依赖于矩阵$\boldsymbol{A}$的稀疏结构（即非零元素的位置分布），与矩阵的具体数值无关。
+
+第二阶段，符号分解（Symbolic Factorization）。基于置换后矩阵$\boldsymbol{A}\boldsymbol{P}_c$的稀疏结构，预测LU因子$\boldsymbol{L}$和$\boldsymbol{U}$的非零结构，构建消元树（elimination tree），识别超节点划分，并为$\boldsymbol{L}$和$\boldsymbol{U}$的非零元素预分配内存空间。符号分解阶段同样仅依赖于矩阵的稀疏结构，其计算复杂度为$O(\mathrm{nnz}(\boldsymbol{L}+\boldsymbol{U}))$，其中$\mathrm{nnz}(\cdot)$表示非零元素个数。消元树刻画了LU分解过程中各列之间的数据依赖关系，是后续数值分解阶段调度计算任务的基础数据结构。
+
+第三阶段，数值分解（Numerical Factorization）。根据符号分解确定的非零结构和超节点划分，执行实际的数值LU分解，计算$\boldsymbol{P}_r \boldsymbol{A} \boldsymbol{P}_c = \boldsymbol{L}\boldsymbol{U}$，其中$\boldsymbol{P}_r$为行置换矩阵（对应部分主元选取）。数值分解是整个求解流程中计算量最大的阶段，SuperLU通过超节点-面板（supernode-panel）更新策略将稀疏计算转化为密集矩阵乘法（GEMM），充分发挥BLAS-3级运算的缓存局部性优势。
+
+第四阶段，三角求解（Triangular Solve）。利用已有的LU分解结果，通过前向代入（forward substitution）求解$\boldsymbol{L}\boldsymbol{y} = \boldsymbol{P}_r\boldsymbol{b}$，再通过回代（backward substitution）求解$\boldsymbol{U}\boldsymbol{P}_c^{\mathrm{T}}\boldsymbol{x} = \boldsymbol{y}$，最终获得原方程的解$\boldsymbol{x}$。三角求解的计算量远小于数值分解，其复杂度与$\boldsymbol{L}$和$\boldsymbol{U}$的非零元素数量成正比。
+
+\subsection{关键数据结构}
+
+SuperLU算法中有两个关键的数据结构在后续的加速策略中起到核心作用：
+
+消元树（Elimination Tree）。消元树是一棵以矩阵列索引为节点的有根树，节点$j$的父节点定义为$\mathrm{parent}(j) = \min\{i > j : l_{ij} \neq 0\}$，即$\boldsymbol{L}$的第$j$列中主对角线以下第一个非零元素所在的行索引。消元树反映了LU分解过程中各列计算之间的依赖关系：只有当节点$j$的所有子节点都完成分解后，节点$j$才能开始分解。
+
+列置换向量$\boldsymbol{P}_c$。列置换向量记录了稀疏排序算法的结果，其计算通常涉及图论算法（如最小度算法），计算开销不可忽略。在稀疏模式不变的情况下，$\boldsymbol{P}_c$可以直接复用。
+
+\section{策略一：基于稀疏模式不变性的符号分析复用}
+
+\subsection{稀疏模式不变性分析}
+
+在基于伴随法的反向设计迭代过程中，设计参数$\boldsymbol{p}$在每步更新后会改变介电常数分布$\varepsilon_r(\boldsymbol{r})$，从而导致系统矩阵$\boldsymbol{A}(\boldsymbol{p})$发生变化。然而，一个关键的观察是：矩阵$\boldsymbol{A}(\boldsymbol{p})$的稀疏模式（即非零元素的位置分布）在整个优化过程中保持不变\cite{Shin2012}。
+
+这一不变性可以从FDFD离散化的结构直接得到。回顾第二章的推导，系统矩阵$\boldsymbol{A} = \boldsymbol{L} + k_0^2 \boldsymbol{M}_\varepsilon$，其中离散拉普拉斯矩阵$\boldsymbol{L}$仅由网格拓扑决定，与设计参数无关；对角矩阵$\boldsymbol{M}_\varepsilon$的非零元素位于主对角线上，设计参数的变化仅改变这些对角元素的数值，不会改变其位置。因此，无论设计参数$\boldsymbol{p}$如何变化，$\boldsymbol{A}(\boldsymbol{p})$的非零元素始终出现在相同的矩阵位置上——即矩阵的稀疏模式保持不变。
+
+用数学语言描述，对于任意两组设计参数$\boldsymbol{p}^{(k)}$和$\boldsymbol{p}^{(k+1)}$，有：
+\begin{equation}
+  \mathrm{Pattern}(\boldsymbol{A}(\boldsymbol{p}^{(k)})) = \mathrm{Pattern}(\boldsymbol{A}(\boldsymbol{p}^{(k+1)}))
+  \label{eq:pattern_invariance}
+\end{equation}
+其中$\mathrm{Pattern}(\boldsymbol{A})$表示矩阵$\boldsymbol{A}$的非零元素位置集合$\{(i,j) : A_{ij} \neq 0\}$。
+
+\subsection{对角占优特性与主元选取策略}
+
+如第~\ref{subsec:math_properties}~小节所述，FDFD矩阵$\boldsymbol{A}$具有主对角线元素非零且近似对角占优的结构特性。这一特性对LU分解的行置换策略具有重要意义。在主元选取中，行置换$\boldsymbol{P}_r$的目的是将绝对值较大的元素移至对角线以确保数值稳定性。由于FDFD矩阵天然具有主对角线元素占优的特性，对角线上的元素本身就是良好的主元候选，因此可以采用固定的行置换矩阵（即$\boldsymbol{P}_r = \boldsymbol{I}$或接近恒等置换），而无需在每次数值分解时动态选取主元。这一特性与SuperLU\_DIST的静态主元选取策略天然契合——SuperLU\_DIST在分解前通过一次行置换将对角元素最大化，此后在所有迭代中固定使用该行置换矩阵，从而消除了动态主元选取的运行时开销和数据依赖。
+
+类似地，列置换矩阵$\boldsymbol{P}_c$仅依赖于稀疏结构，在稀疏模式不变的条件下同样可以固定不变。因此，行置换和列置换矩阵在整个优化过程中均可一次计算、全程复用。
+
+\subsection{符号分析结果的复用}
+
+基于上述稀疏模式不变性，SuperLU求解器四个阶段中的前两个阶段——列置换和符号分解——的结果可以在整个优化过程中完全复用。具体而言：
+
+第一，列置换矩阵$\boldsymbol{P}_c$的复用。由于列排序算法仅依赖于稀疏结构，$\boldsymbol{P}_c$在首次求解时计算一次后即可在所有后续迭代中直接使用，无需重新计算。
+
+第二，消元树的复用。消元树由置换后矩阵的稀疏结构唯一确定，稀疏模式不变意味着消元树在所有迭代中保持一致，可以直接复用。
+
+第三，LU因子内存空间的复用。符号分解阶段预测的$\boldsymbol{L}$和$\boldsymbol{U}$的非零结构在所有迭代中相同，因此为$\boldsymbol{L}$和$\boldsymbol{U}$分配的内存空间无需释放和重新分配，后续迭代中的数值分解可以直接在已有的内存空间上覆写新的数值。
+
+\subsection{计算复杂度分析}
+
+设SuperLU完整求解一次线性系统的总耗时为$T_{\mathrm{total}} = T_{\mathrm{perm}} + T_{\mathrm{symb}} + T_{\mathrm{num}} + T_{\mathrm{solve}}$，其中各项分别对应四个阶段的耗时。采用符号分析复用策略后，从第二次迭代起，每次求解的耗时降低为$T_{\mathrm{reuse}} = T_{\mathrm{num}} + T_{\mathrm{solve}}$。
+
+对于FDFD产生的稀疏线性系统，符号分析所占用的时间取决于矩阵规模和稀疏结构。在数百至上千次迭代的优化过程中，这一节省被累积放大。设优化总迭代次数为$K$，每次迭代包含正向和伴随两次求解，则总节省的计算时间为：
+\begin{equation}
+  \Delta T = (2K - 1)(T_{\mathrm{perm}} + T_{\mathrm{symb}})
+  \label{eq:time_saving}
+\end{equation}
+对于典型的$K = 500$次迭代，即总共999次求解可以免去符号分析开销。
+
+\section{策略二：多右端向量的批量求解}
+
+\subsection{多光源批量仿真场景}
+
+在光子集成电路的反向设计中，单次迭代往往不只需要一次正向仿真。许多实际器件需要在多个工作条件下同时优化性能——例如多个输入端口、多个入射波长或多种偏振模式。以波长解复用器为例，若器件需要同时优化$M$个波长通道的传输效率，则每个波长对应一个不同的激励源$\boldsymbol{b}_m$（$m = 1, 2, \ldots, M$），相应地产生$M$组正向仿真和$M$组伴随仿真。
+
+关键在于，当工作波长相同时，所有光源共享同一个系统矩阵$\boldsymbol{A}$——因为$\boldsymbol{A} = \boldsymbol{L} + k_0^2 \boldsymbol{M}_\varepsilon$仅取决于网格结构、工作频率和介电常数分布，而不依赖于激励源。对于需要在同一波长下对多个输入端口进行仿真的情况，需要求解的方程组为：
+\begin{equation}
+  \boldsymbol{A} \boldsymbol{x}_m = \boldsymbol{b}_m, \quad m = 1, 2, \ldots, M
+  \label{eq:multi_rhs}
+\end{equation}
+
+类似地，根据伴随法的推导（第二章式~\eqref{eq:adjoint_equation}），$M$个伴随方程为：
+\begin{equation}
+  \boldsymbol{A}^{\dagger} \boldsymbol{\lambda}_m = \boldsymbol{c}_m, \quad m = 1, 2, \ldots, M
+  \label{eq:multi_adjoint}
+\end{equation}
+其中$\boldsymbol{c}_m = -\left(\frac{\partial \mathcal{F}}{\partial \boldsymbol{e}_m}\right)^{\dagger}$为第$m$个伴随方程的右端向量。
+
+\subsection{单次分解多次求解策略}
+
+利用LU分解的结构特性，上述$2M$个线性方程组可以通过以下方式高效求解：
+
+第一步，对矩阵$\boldsymbol{A}$进行一次LU分解：$\boldsymbol{P}_r \boldsymbol{A} \boldsymbol{P}_c = \boldsymbol{L}\boldsymbol{U}$。
+
+第二步，利用$\boldsymbol{L}$和$\boldsymbol{U}$，通过三角求解分别计算$M$个正向解$\boldsymbol{x}_1, \boldsymbol{x}_2, \ldots, \boldsymbol{x}_M$。
+
+第三步，对于$M$个伴随方程，由于$\boldsymbol{A}^{\dagger} = (\boldsymbol{P}_c^{\mathrm{T}} \boldsymbol{U}^{\dagger} \boldsymbol{L}^{\dagger} \boldsymbol{P}_r^{\mathrm{T}})^{\dagger}$，可以利用同一组$\boldsymbol{L}$和$\boldsymbol{U}$的共轭转置进行三角求解，计算$M$个伴随解$\boldsymbol{\lambda}_1, \boldsymbol{\lambda}_2, \ldots, \boldsymbol{\lambda}_M$。
+
+这样，原本需要$2M$次完整求解（包含$2M$次LU分解）的计算任务，被简化为1次LU分解加$2M$次三角求解。
+
+\subsection{计算复杂度分析}
+
+设单次LU分解的耗时为$T_{\mathrm{factor}}$，单次三角求解的耗时为$T_{\mathrm{solve}}$。在不使用批量求解策略时，朴素方法的每次迭代耗时为：
+\begin{equation}
+  T_{\mathrm{naive}} = 2M \cdot (T_{\mathrm{factor}} + T_{\mathrm{solve}})
+  \label{eq:naive_time}
+\end{equation}
+
+采用批量求解策略后，每次迭代的耗时降低为：
+\begin{equation}
+  T_{\mathrm{batch}} = T_{\mathrm{factor}} + 2M \cdot T_{\mathrm{solve}}
+  \label{eq:batch_time}
+\end{equation}
+
+加速比为：
+\begin{equation}
+  S = \frac{T_{\mathrm{naive}}}{T_{\mathrm{batch}}} = \frac{2M(T_{\mathrm{factor}} + T_{\mathrm{solve}})}{T_{\mathrm{factor}} + 2M \cdot T_{\mathrm{solve}}}
+  \label{eq:batch_speedup}
+\end{equation}
+
+对于稀疏直接法，数值分解的计算量远大于三角求解（$T_{\mathrm{factor}} \gg T_{\mathrm{solve}}$），因此当$M$较大时，加速比趋近于$2M$。即使在$M$较小的情况下（例如$M = 2$），由于分解阶段通常占总求解时间的80\%以上，加速比也能达到约3倍以上。
+
+需要指出的是，策略二与策略一可以自然地组合使用：在首次迭代中执行完整的求解流程（列置换$\rightarrow$符号分解$\rightarrow$数值分解$\rightarrow$批量三角求解），在后续迭代中跳过列置换和符号分解阶段（数值分解$\rightarrow$批量三角求解），从而同时享受两种优化带来的性能提升。
+
+\section{策略三：基于SuperLU\_DIST的分布式并行求解}
+
+\subsection{SuperLU\_DIST概述}
+
+SuperLU\_DIST是SuperLU的分布式内存并行版本，由Li和Demmel开发\cite{Li2003}，专为大规模稀疏线性系统的并行求解而设计。与串行版SuperLU相比，SuperLU\_DIST在以下几个关键方面进行了算法重新设计以实现高可扩展性\cite{Liu2023}：
+
+第一，静态主元选取（Static Pivoting）。与串行版的部分主元选取不同，SuperLU\_DIST在数值分解之前通过行置换将矩阵的对角元素最大化，然后在分解过程中仅在对角线上进行主元选取。当对角主元过小时，用一个小扰动量替换之，以避免数值不稳定。这一策略消除了部分主元选取引入的运行时数据依赖，使得分解过程可以高度并行化。
+
+第二，二维块循环进程布局（2D Block-Cyclic Process Grid）。SuperLU\_DIST将$P$个进程组织为$P_r \times P_c$的二维进程网格，矩阵$\boldsymbol{L}$和$\boldsymbol{U}$的超节点块按照块循环方式分布在进程网格上。这种二维分布策略相比一维分布具有更好的负载均衡和通信可扩展性。
+
+第三，并行符号分解。SuperLU\_DIST支持并行的符号分解算法\cite{Grigori2007}，通过图划分方法将符号分解任务分配到多个进程上并行执行，使得符号分解阶段也能受益于并行计算。
+
+\subsection{并行分解算法}
+
+SuperLU\_DIST的数值分解采用基于超节点的右视（right-looking）算法。分解过程按消元树的拓扑顺序，自底向上逐层处理各超节点。对于消元树中的每个超节点$s$，分解过程包含以下三个步骤：
+
+第一步，对角块分解。对超节点$s$对应的对角块执行密集LU分解。
+
+第二步，面板求解。利用对角块的LU因子，通过三角求解更新$\boldsymbol{L}$中超节点$s$以下的列块和$\boldsymbol{U}$中超节点$s$右侧的行块。
+
+第三步，Schur补更新。利用更新后的$\boldsymbol{L}$和$\boldsymbol{U}$块，对剩余的尾部矩阵（trailing submatrix）执行Schur补更新：
+\begin{equation}
+  \boldsymbol{A}_{\mathrm{trail}} \leftarrow \boldsymbol{A}_{\mathrm{trail}} - \boldsymbol{L}_{\mathrm{col}} \boldsymbol{U}_{\mathrm{row}}
+  \label{eq:schur_update}
+\end{equation}
+其中$\boldsymbol{L}_{\mathrm{col}}$和$\boldsymbol{U}_{\mathrm{row}}$分别为当前超节点对应的$\boldsymbol{L}$列块和$\boldsymbol{U}$行块。Schur补更新是计算量最大的步骤，其本质为密集矩阵乘法（GEMM），可以高效地利用多核处理器和GPU的并行计算能力。
+
+在二维进程网格上，上述三个步骤的并行化策略如下：对角块分解由拥有该对角块的进程执行；面板求解在同一进程行（或列）内并行；Schur补更新则在整个进程网格上并行，各进程独立更新其本地拥有的矩阵块，仅在需要时通过MPI通信交换$\boldsymbol{L}$和$\boldsymbol{U}$的块数据。
+
+\subsection{多进程多线程混合并行}
+
+SuperLU\_DIST支持MPI+OpenMP的混合并行模式，在分布式内存的MPI进程间分配超节点级的并行任务，在共享内存的OpenMP线程间分配密集矩阵运算的并行计算\cite{Liu2023}。这种两级并行策略在现代多核集群上能够实现良好的资源利用率：
+
+MPI层面，多个进程通过二维块循环分布共同持有$\boldsymbol{L}$和$\boldsymbol{U}$因子，分解过程中的进程间通信主要包括：对角块分解结果的广播、$\boldsymbol{L}$列块和$\boldsymbol{U}$行块的点对点通信。SuperLU\_DIST通过异步通信和计算-通信重叠策略来隐藏通信延迟。
+
+OpenMP层面，每个MPI进程内部使用多线程并行执行密集矩阵运算（如GEMM）和三角求解。由于这些运算具有良好的数据局部性和可并行性，多线程加速效果显著。
+
+此外，SuperLU\_DIST的最新版本还引入了通信避免（communication-avoiding）的三维稀疏LU分解算法\cite{Liu2023}，通过在第三个维度（进程层）上复制数据来减少通信量，以额外的内存开销换取更低的通信复杂度，在强扩展性（strong scaling）场景下表现出色。

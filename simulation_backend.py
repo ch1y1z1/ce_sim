@@ -62,7 +62,7 @@ class FdfdSolverEzBackend:
         dL: float,
         eps_r: jnp.ndarray,
         npml,
-        solver_config: Optional[Dict[str, Any]] = None,
+        enable_symbolic_reuse: bool = False,
     ):
         npml_pair = _normalize_npml(npml)
         nx, ny = eps_r.shape
@@ -72,11 +72,8 @@ class FdfdSolverEzBackend:
         self._eps_r = eps_r
         self._dxy = DxyMatrix(omega, dL, self.shape, npml_pair)
 
-        solver_config = solver_config or {}
         self._solve_single, self._solve_batch = make_solver_pair(
-            single_solver=solver_config.get("single_solver"),
-            batch_factorize=solver_config.get("batch_factorize"),
-            batch_solver=solver_config.get("batch_solver"),
+            enable_symbolic_reuse=enable_symbolic_reuse,
         )
 
     @property
@@ -129,12 +126,15 @@ def build_simulation_backend(
         return CevicheEzBackend(omega, dL, eps_r, npml)
 
     if backend == "fdfd_solver":
+        enable_symbolic_reuse = bool(
+            simulation_config.get("enable_symbolic_reuse", True)
+        )
         return FdfdSolverEzBackend(
             omega,
             dL,
             eps_r,
             npml,
-            solver_config=simulation_config.get("fdfd_solver", {}),
+            enable_symbolic_reuse=enable_symbolic_reuse,
         )
 
     raise ValueError(

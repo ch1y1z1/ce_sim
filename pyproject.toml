@@ -18,4 +18,5 @@ dependencies = [
     "typer",
     "agjax",
     "threadpoolctl>=3.6.0",
+    "nanobind>=2.2.0",
 ]

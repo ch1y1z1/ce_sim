@@ -18,11 +18,8 @@ output = [1, 2, 3, 0]
 
 [simulation]
 backend = "fdfd_solver" # 可选: "ceviche" / "fdfd_solver"
-
-[simulation.fdfd_solver]
-single_solver = "spsolve"   # 单右端项求解器
-batch_factorize = "splu"    # 批量求解预分解器
-batch_solver = "solve"      # 使用分解结果求解
+enable_batch = true      # 是否启用批量求解（仅 fdfd_solver 生效）
+enable_symbolic_reuse = true # 是否复用符号分析与 LU 内存（仅 fdfd_solver 生效）
 
 [[layers]]
 [layers.input]
@@ -50,6 +47,7 @@ num_conv = 1       # 卷积操作次数
 E0_scale = 1.5       # Ez0的缩放因子
 
 [train]
+enable_jit = true      # 是否尝试启用 JIT（失败会自动回退）
 step_size = 0.003    # 优化步长
 test_batch_size = 32  # 测试批次大小
 train_batch_size = 32 # 训练批次大小 
