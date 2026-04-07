@@ -22,6 +22,7 @@ class CEmodel(nnx.Module):
             config：配置文件字典
         """
         layers_config = config["layers"]
+        simulation_config = config.get("simulation", {})
         self.layers = []
         for layer_config in layers_config:
             layer = Layer(
@@ -29,6 +30,7 @@ class CEmodel(nnx.Module):
                 layer_config["input"],
                 layer_config["output"],
                 config["basic"],
+                simulation_config,
             )
             self.layers.append(layer)
 

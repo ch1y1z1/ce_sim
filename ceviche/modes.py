@@ -74,7 +74,9 @@ def solver_eigs(A, Neigs, guess_value=1.0):
         For more info, see https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.linalg.eigs.html
     """
 
-    values, vectors = spl.eigs(A, k=Neigs, sigma=guess_value, v0=None, which='LM')
+    # Use a deterministic initial vector to make mode solving reproducible.
+    v0 = np.ones(A.shape[0], dtype=np.complex128)
+    values, vectors = spl.eigs(A, k=Neigs, sigma=guess_value, v0=v0, which='LM')
 
     return values, vectors
 
@@ -115,8 +117,19 @@ def normalize_modes(vectors):
     """
 
     powers = np.sum(np.square(np.abs(vectors)), axis=0)
+    vectors = vectors / np.sqrt(powers)
 
-    return vectors / np.sqrt(powers)
+    # Fix the arbitrary global phase/sign of each eigenmode for deterministic outputs.
+    for i in range(vectors.shape[1]):
+        vec = vectors[:, i]
+        anchor = np.argmax(np.abs(vec))
+        phase = np.angle(vec[anchor])
+        vec = vec * np.exp(-1j * phase)
+        if np.real(vec[anchor]) < 0:
+            vec = -vec
+        vectors[:, i] = vec
+
+    return vectors
 
 def Ez_to_H(Ez, omega, dL, npml):
     """ Converts the Ez output of mode solver to Hx and Hy components

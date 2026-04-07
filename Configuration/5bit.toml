@@ -16,6 +16,14 @@ n_bits = 5
 input = "./dataset/5bit/input.npy"
 output = "./dataset/5bit/output.npy"
 
+[simulation]
+backend = "ceviche" # 可选: "ceviche" / "fdfd_solver"
+
+[simulation.fdfd_solver]
+single_solver = "spsolve"   # 单右端项求解器
+batch_factorize = "splu"    # 批量求解预分解器
+batch_solver = "solve"      # 使用分解结果求解
+
 [[layers]]
 [layers.input]
 n_bits = 10 # 输入端口比特数

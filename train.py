@@ -1,6 +1,7 @@
 import os
+import re
 import shutil
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 import typer
 import time
 import toml
@@ -19,6 +20,92 @@ import jax
 app = typer.Typer()
 
 
+def _parse_override_value(raw_value: str) -> Any:
+    key = "__override_value__"
+    try:
+        return toml.loads(f"{key} = {raw_value}")[key]
+    except toml.TomlDecodeError:
+        # 允许未加引号的简单字符串，例如 fdfd_solver
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_./-]*", raw_value):
+            return raw_value
+        raise typer.BadParameter(
+            f"无法解析 override 值: {raw_value}。"
+            "请使用 TOML 字面量（如 true, 10, 1e-3, \"text\", [1,2]）。"
+        )
+
+
+def _split_override_path(path: str) -> list[str]:
+    normalized = re.sub(r"\[(\d+)\]", r".\1", path.strip())
+    tokens = [token for token in normalized.split(".") if token]
+    if not tokens:
+        raise typer.BadParameter(f"无效 override 路径: {path}")
+    return tokens
+
+
+def _set_config_value(root: Any, path_tokens: list[str], value: Any) -> None:
+    node = root
+    for idx, token in enumerate(path_tokens[:-1]):
+        next_token = path_tokens[idx + 1]
+
+        if isinstance(node, dict):
+            if token not in node:
+                node[token] = [] if next_token.isdigit() else {}
+            node = node[token]
+            continue
+
+        if isinstance(node, list):
+            if not token.isdigit():
+                raise typer.BadParameter(
+                    f"路径段 {token} 应为列表索引，完整路径: {'.'.join(path_tokens)}"
+                )
+            index = int(token)
+            if index < 0 or index >= len(node):
+                raise typer.BadParameter(
+                    f"列表索引越界: {index}，完整路径: {'.'.join(path_tokens)}"
+                )
+            node = node[index]
+            continue
+
+        raise typer.BadParameter(f"路径无法继续深入: {'.'.join(path_tokens)}")
+
+    leaf = path_tokens[-1]
+    if isinstance(node, dict):
+        node[leaf] = value
+        return
+
+    if isinstance(node, list):
+        if not leaf.isdigit():
+            raise typer.BadParameter(
+                f"路径段 {leaf} 应为列表索引，完整路径: {'.'.join(path_tokens)}"
+            )
+        index = int(leaf)
+        if index < 0 or index >= len(node):
+            raise typer.BadParameter(
+                f"列表索引越界: {index}，完整路径: {'.'.join(path_tokens)}"
+            )
+        node[index] = value
+        return
+
+    raise typer.BadParameter(f"路径无法赋值: {'.'.join(path_tokens)}")
+
+
+def apply_overrides(config: dict, overrides: list[str]) -> list[str]:
+    applied = []
+    for item in overrides:
+        if "=" not in item:
+            raise typer.BadParameter(
+                f"override 格式错误: {item}。应为 key=value，例如 simulation.backend=\"fdfd_solver\""
+            )
+
+        path, raw_value = item.split("=", 1)
+        path_tokens = _split_override_path(path)
+        value = _parse_override_value(raw_value.strip())
+        _set_config_value(config, path_tokens, value)
+        applied.append(f"{'.'.join(path_tokens)}={repr(value)}")
+
+    return applied
+
+
 # 定义主函数，作为命令行入口
 @app.command()
 def main(
@@ -28,9 +115,18 @@ def main(
     ] = "./Configuration/2bit.toml",
     # 作业 ID，使用 --job-id 或 -j 参数指定
     job_id: Annotated[Optional[str], typer.Option("--job-id", "-j")] = None,
+    # 覆盖配置，支持多次传入，例如 --override simulation.backend="fdfd_solver"
+    override: Annotated[
+        Optional[list[str]],
+        typer.Option("--override", "-o"),
+    ] = None,
 ):
     # 加载配置文件
     config = toml.load(config_file)
+    applied_overrides = []
+    if override:
+        applied_overrides = apply_overrides(config, override)
+
     # 获取训练配置
     train_config = config["train"]
     # 获取保存和加载配置
@@ -43,7 +139,12 @@ def main(
     # 创建保存目录
     os.makedirs(f"{save_load_config['base_path']}/{t}", exist_ok=True)
     # 复制配置文件到保存目录
-    shutil.copyfile(config_file, f"{save_load_config['base_path']}/{t}/config.toml")
+    config_dump_path = f"{save_load_config['base_path']}/{t}/config.toml"
+    if applied_overrides:
+        with open(config_dump_path, "w", encoding="utf-8") as f:
+            toml.dump(config, f)
+    else:
+        shutil.copyfile(config_file, config_dump_path)
     # 添加日志文件
     logger.add(f"{save_load_config['base_path']}/{t}/train.log")
     # 如果指定了作业 ID，记录到日志
@@ -51,6 +152,8 @@ def main(
         logger.info(f"Slurm 作业 ID: {job_id}")
     # 记录配置文件路径
     logger.info(f"配置文件: {config_file}")
+    if applied_overrides:
+        logger.info(f"命令行覆盖参数: {applied_overrides}")
     # 记录开始训练时间和工作目录
     logger.info(f"开始训练于 {t} 在 {pwd}")
     # 记录保存目录

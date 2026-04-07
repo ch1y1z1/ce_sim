@@ -3,8 +3,8 @@ import toml
 import basis_generator_chi as bgc
 
 import ceviche
-from ceviche.fdfd import fdfd_ez
 from ceviche.modes import insert_mode
+from simulation_backend import build_simulation_backend
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -61,7 +61,7 @@ class Layer(flax.nnx.Module):
         output: 输出端口配置
         basic: 基础物理参数
     """
-    def __init__(self, grid, input, output, basic):
+    def __init__(self, grid, input, output, basic, simulation_config=None):
         """初始化电磁场模拟层
         
         参数：
@@ -69,6 +69,7 @@ class Layer(flax.nnx.Module):
             input: 输入端口配置字典
             output: 输出端口配置字典
             basic: 基础物理参数字典
+            simulation_config: 仿真后端配置
         """
         n_bits_i = input["n_bits"]
         grid["ny"] = int((288 - 20) / 25 * (2 * n_bits_i + 1) + 20)
@@ -80,6 +81,8 @@ class Layer(flax.nnx.Module):
 
         self.grid = grid
         self.basic = basic
+        self.simulation_config = simulation_config or {}
+        self.backend_name = self.simulation_config.get("backend", "ceviche")
 
         self.epsr_total = bgc.epsr_parameterization(
             self.rho,
@@ -97,8 +100,12 @@ class Layer(flax.nnx.Module):
             self.epsr_total,
         )
 
-        self.simulation = fdfd_ez(
-            omega, grid["resolution"], self.epsr_total, [grid["npml"], grid["npml"]]
+        self.simulation = build_simulation_backend(
+            omega,
+            grid["resolution"],
+            self.epsr_total,
+            [grid["npml"], grid["npml"]],
+            self.simulation_config,
         )
 
         ic_total = jnp.sum(jnp.array(self.ics), axis=0)
@@ -146,7 +153,19 @@ class Layer(flax.nnx.Module):
         """
         # print(self.rho_jax.value)
         sources = jnp.sum(masks[:, :, None, None] * jnp.array(self.ics), axis=1)
-        Ezs = [self.solve(self.rho_jax.value, source) for source in sources]
+
+        if self.backend_name == "fdfd_solver":
+            rho = self.rho_jax.value.reshape((self.grid["nx"], self.grid["ny"]))
+            self.simulation.eps_r = bgc.epsr_parameterization(
+                rho,
+                self.bg_rho,
+                self.opt_region,
+                self.basic["epsilon_min"],
+                self.basic["epsilon_max"],
+            )
+            _, _, Ezs = self.simulation.solve_batch(sources)
+        else:
+            Ezs = [self.solve(self.rho_jax.value, source) for source in sources]
 
         # 计算每个Ez和每个probe的重叠
         overlaps = jnp.array(
