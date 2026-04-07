@@ -16,5 +16,6 @@ dependencies = [
     "flax",
     "orbax-checkpoint",
     "typer",
-    "agjax"
+    "agjax",
+    "threadpoolctl>=3.6.0",
 ]

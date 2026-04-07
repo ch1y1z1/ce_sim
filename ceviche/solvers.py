@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.sparse.linalg as spl
+from threadpoolctl import threadpool_limits
 
 
 """ This file stores the various sparse linear system solvers you can use for FDFD """
@@ -59,7 +60,8 @@ def _solve_direct(A, b):
         return x
     else:
         # scipy solver.
-        return spl.spsolve(A, b)
+        with threadpool_limits(limits=1):
+            return spl.spsolve(A, b)
 
 def _solve_iterative(A, b, iterative_method=DEFAULT_ITERATIVE_METHOD):
     """ Iterative solver """

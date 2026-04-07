@@ -108,10 +108,10 @@ class Layer(flax.nnx.Module):
             for probe in self.probes
         ]
 
-        self.E0s_jax = flax.nnx.Param(jnp.array(self.E0s))
+        # self.E0s_jax = flax.nnx.Param(jnp.array(self.E0s))
         self.rho_jax = flax.nnx.Param(self.rho)
-        self.alpha = flax.nnx.Param(basic["alpha"])
-        # self.alpha = basic["alpha"]
+        # self.alpha = flax.nnx.Param(basic["alpha"])
+        self.alpha = basic["alpha"]
 
     @functools.partial(agjax.wrap_for_jax, nondiff_argnums=(0,))
     def solve(self, rho, source):
@@ -152,7 +152,7 @@ class Layer(flax.nnx.Module):
         overlaps = jnp.array(
             [[mode_overlap(Ez, probe) for probe in self.probes] for Ez in Ezs]
         )
-        a_list = jax.nn.sigmoid(-(overlaps - self.E0s_jax.value) * self.alpha.value)
+        a_list = jax.nn.sigmoid(-(overlaps - jnp.array(self.E0s)) * self.alpha)
 
         return jnp.array(a_list)
 
@@ -181,8 +181,8 @@ class Layer(flax.nnx.Module):
         output_mask = [
             sigmoid_b(
                 mode_overlap(Ez, probe),
-                self.E0s_jax.value[i],
-                self.alpha.value,
+                jnp.array(self.E0s)[i],
+                self.alpha,
             )
             for i, probe in enumerate(self.probes)
         ]
