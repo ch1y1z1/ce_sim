@@ -20,6 +20,13 @@ output = "./dataset/6bit/output.npy"
 backend = "ceviche" # 可选: "ceviche" / "fdfd_solver"
 enable_batch = false   # 是否启用批量求解（仅 fdfd_solver 生效）
 enable_symbolic_reuse = false # 是否复用符号分析与 LU 内存（仅 fdfd_solver 生效）
+enable_superlu_dist = false  # 是否启用 SuperLU_DIST（仅 fdfd_solver 生效）
+
+[simulation.superlu_dist]
+nrow = 2      # SuperLU_DIST 进程网格行数
+ncol = 1      # SuperLU_DIST 进程网格列数
+rowperm = 0   # 行置换，0=单位置换（NOROWPERM）
+colperm = 0   # 列置换，0=单位置换（NATURAL）
 
 [[layers]]
 [layers.input]

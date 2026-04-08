@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional, Protocol, Tuple
 import jax.numpy as jnp
 
 from ceviche.fdfd import fdfd_ez
+from spsolver.bindings_superlu_dist import DistSolveConfig
 from fdfd_solver.dxy_matrix import DxyMatrix
 from fdfd_solver.make_A_b import make_A
 from fdfd_solver.solver import make_solver_pair
@@ -63,6 +64,8 @@ class FdfdSolverEzBackend:
         eps_r: jnp.ndarray,
         npml,
         enable_symbolic_reuse: bool = False,
+        enable_superlu_dist: bool = False,
+        superlu_dist_config: Optional[DistSolveConfig] = None,
     ):
         npml_pair = _normalize_npml(npml)
         nx, ny = eps_r.shape
@@ -74,6 +77,8 @@ class FdfdSolverEzBackend:
 
         self._solve_single, self._solve_batch = make_solver_pair(
             enable_symbolic_reuse=enable_symbolic_reuse,
+            use_superlu_dist=enable_superlu_dist,
+            dist_config=superlu_dist_config,
         )
 
     @property
@@ -129,12 +134,28 @@ def build_simulation_backend(
         enable_symbolic_reuse = bool(
             simulation_config.get("enable_symbolic_reuse", True)
         )
+        enable_superlu_dist = bool(
+            simulation_config.get("enable_superlu_dist", False)
+        )
+        dist_cfg_raw = simulation_config.get("superlu_dist", {}) or {}
+        dist_cfg = DistSolveConfig(
+            nrow=int(dist_cfg_raw.get("nrow", 2)),
+            ncol=int(dist_cfg_raw.get("ncol", 1)),
+            rowperm=int(dist_cfg_raw.get("rowperm", 0)),
+            colperm=int(dist_cfg_raw.get("colperm", 0)),
+            int64=int(dist_cfg_raw.get("int64", 1)),
+            algo3d=int(dist_cfg_raw.get("algo3d", 0)),
+            verbosity=bool(dist_cfg_raw.get("verbosity", False)),
+            library_path=dist_cfg_raw.get("library_path"),
+        )
         return FdfdSolverEzBackend(
             omega,
             dL,
             eps_r,
             npml,
             enable_symbolic_reuse=enable_symbolic_reuse,
+            enable_superlu_dist=enable_superlu_dist,
+            superlu_dist_config=dist_cfg,
         )
 
     raise ValueError(

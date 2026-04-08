@@ -100,8 +100,18 @@ enable_symbolic_reuse = true
 ## 已知限制
 
 - 当前绑定针对复数双精度（`complex128`）路径。
-- 当前接入的是本地 SuperLU（串行），非 SuperLU_DIST。
+- 默认接入的是本地 SuperLU（串行）；已增加可选 SuperLU_DIST 路由（通过 `simulation.enable_superlu_dist` 启用）。
 - 若本地未安装 `nanobind` 或编译链缺失，扩展会导入失败，需先完成构建。
+
+### SuperLU_DIST 选项补充（2026-04-08）
+
+- 新增配置：`simulation.enable_superlu_dist`
+- 新增参数段：
+  - `simulation.superlu_dist.nrow = 2`
+  - `simulation.superlu_dist.ncol = 1`
+  - `simulation.superlu_dist.rowperm = 0`（单位行置换）
+  - `simulation.superlu_dist.colperm = 0`（单位列置换）
+- 兼容性：可与 `enable_batch`、`enable_symbolic_reuse` 同时使用（仅 `fdfd_solver` 后端生效）。
 
 ## 2026-04-08 追加修复
 

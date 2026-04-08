@@ -94,6 +94,33 @@ uv run train.py -o train.num_epochs=1 -o train.enable_jit=true
 
 - 第三步：增加 `enable_superlu_dist` 开关与分布式后端路由。
 
+## 本次落地范围（第三步）
+
+完成 `enable_superlu_dist` 开关：
+
+- 配置键：`simulation.enable_superlu_dist`
+- 生效条件：`simulation.backend == "fdfd_solver"`
+- 兼容关系：
+  - 与 `enable_batch` 兼容：batch 模式仍由 `solve_batch` 路径驱动
+  - 与 `enable_symbolic_reuse` 兼容：复用开关仍可用（dist 模式下按稀疏模式复用会话）
+
+新增 `simulation.superlu_dist` 配置段：
+
+- `nrow = 2`
+- `ncol = 1`
+- `rowperm = 0`（NOROWPERM，单位置换）
+- `colperm = 0`（NATURAL，单位置换）
+
+实现要点：
+
+- 在 `simulation_backend.py` 中读取并下发 `enable_superlu_dist` 与 `simulation.superlu_dist.*`。
+- 在 `fdfd_solver/solver.py` 中扩展 `make_solver_pair(..., use_superlu_dist, dist_config)`。
+- 新增 `spsolver/bindings_superlu_dist.py`：
+  - 通过 SuperLU_DIST 自带 worker 协议（`control/data/result`）驱动分布式求解
+  - 进程网格按 `nrow*ncol` 启动（本次固定默认 2x1）
+  - 置换使用单位矩阵（`rowperm=0`, `colperm=0`）
+  - 对复数系统使用实数块矩阵等价变换以兼容 `pdbridge` 的 double 接口
+
 ## 当前回归结果（2026-04-08）
 
 以下最小回归命令均已通过（1 epoch）：
