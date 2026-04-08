@@ -3,10 +3,15 @@ from typing import Any, Dict, Optional, Protocol, Tuple
 import jax.numpy as jnp
 
 from ceviche.fdfd import fdfd_ez
+from ceviche.solvers import configure_ceviche_backend_solver
 from spsolver.bindings_superlu_dist import DistSolveConfig
 from fdfd_solver.dxy_matrix import DxyMatrix
 from fdfd_solver.make_A_b import make_A
-from fdfd_solver.solver import make_solver_pair
+from fdfd_solver.solver import (
+    configure_fdfd_solver_backend_logging,
+    make_solver_pair,
+    make_solver_pair_scipy,
+)
 
 
 class EzSimulationBackend(Protocol):
@@ -35,6 +40,7 @@ def _normalize_npml(npml) -> Tuple[int, int]:
 
 class CevicheEzBackend:
     def __init__(self, omega: float, dL: float, eps_r: jnp.ndarray, npml):
+        configure_ceviche_backend_solver()
         npml_pair = _normalize_npml(npml)
         self._sim = fdfd_ez(omega, dL, eps_r, [npml_pair[0], npml_pair[1]])
 
@@ -67,6 +73,7 @@ class FdfdSolverEzBackend:
         enable_superlu_dist: bool = False,
         superlu_dist_config: Optional[DistSolveConfig] = None,
     ):
+        configure_fdfd_solver_backend_logging()
         npml_pair = _normalize_npml(npml)
         nx, ny = eps_r.shape
 
@@ -80,6 +87,61 @@ class FdfdSolverEzBackend:
             use_superlu_dist=enable_superlu_dist,
             dist_config=superlu_dist_config,
         )
+
+    @property
+    def eps_r(self) -> jnp.ndarray:
+        return self._eps_r
+
+    @eps_r.setter
+    def eps_r(self, new_eps: jnp.ndarray) -> None:
+        if tuple(new_eps.shape) != self.shape:
+            raise ValueError(
+                f"eps_r shape changed from {self.shape} to {tuple(new_eps.shape)}"
+            )
+        self._eps_r = new_eps
+
+    def _make_A(self):
+        nx, ny = self.shape
+        return make_A(self._dxy, self._eps_r, nx, ny, self.omega)
+
+    def solve(self, source: jnp.ndarray):
+        entries_a, indices_a = self._make_A()
+        b = (1j * self.omega) * source.flatten()
+        ez_vec = self._solve_single(entries_a, indices_a, b)
+
+        Ez = ez_vec.reshape(self.shape)
+        zeros = jnp.zeros_like(Ez)
+        return zeros, zeros, Ez
+
+    def solve_batch(self, sources: jnp.ndarray):
+        entries_a, indices_a = self._make_A()
+        batch_size = sources.shape[0]
+        b = (1j * self.omega) * sources.reshape((batch_size, -1))
+        ez_vec = self._solve_batch(entries_a, indices_a, b)
+
+        Ez = ez_vec.reshape((batch_size,) + self.shape)
+        zeros = jnp.zeros_like(Ez)
+        return zeros, zeros, Ez
+
+
+class FdfdSolverScipyEzBackend:
+    def __init__(
+        self,
+        omega: float,
+        dL: float,
+        eps_r: jnp.ndarray,
+        npml,
+    ):
+        configure_fdfd_solver_backend_logging()
+        npml_pair = _normalize_npml(npml)
+        nx, ny = eps_r.shape
+
+        self.omega = omega
+        self.shape = (nx, ny)
+        self._eps_r = eps_r
+        self._dxy = DxyMatrix(omega, dL, self.shape, npml_pair)
+
+        self._solve_single, self._solve_batch = make_solver_pair_scipy()
 
     @property
     def eps_r(self) -> jnp.ndarray:
@@ -138,6 +200,12 @@ def build_simulation_backend(
             simulation_config.get("enable_superlu_dist", False)
         )
         dist_cfg_raw = simulation_config.get("superlu_dist", {}) or {}
+        launcher_extra_args_raw = dist_cfg_raw.get("launcher_extra_args", [])
+        if isinstance(launcher_extra_args_raw, str):
+            launcher_extra_args = tuple(launcher_extra_args_raw.split())
+        else:
+            launcher_extra_args = tuple(str(x) for x in launcher_extra_args_raw)
+
         dist_cfg = DistSolveConfig(
             nrow=int(dist_cfg_raw.get("nrow", 2)),
             ncol=int(dist_cfg_raw.get("ncol", 1)),
@@ -147,6 +215,9 @@ def build_simulation_backend(
             algo3d=int(dist_cfg_raw.get("algo3d", 0)),
             verbosity=bool(dist_cfg_raw.get("verbosity", False)),
             library_path=dist_cfg_raw.get("library_path"),
+            launcher=dist_cfg_raw.get("launcher"),
+            launcher_extra_args=launcher_extra_args,
+            wait_timeout_sec=float(dist_cfg_raw.get("wait_timeout_sec", 600.0)),
         )
         return FdfdSolverEzBackend(
             omega,
@@ -158,6 +229,10 @@ def build_simulation_backend(
             superlu_dist_config=dist_cfg,
         )
 
+    if backend == "fdfd_solver_scipy":
+        return FdfdSolverScipyEzBackend(omega, dL, eps_r, npml)
+
     raise ValueError(
-        f"Unknown simulation backend: {backend}. Use 'ceviche' or 'fdfd_solver'."
+        "Unknown simulation backend: "
+        f"{backend}. Use 'ceviche', 'fdfd_solver', or 'fdfd_solver_scipy'."
     )

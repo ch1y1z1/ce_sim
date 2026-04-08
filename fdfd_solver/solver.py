@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import atexit
+import logging
 from typing import Optional
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.sparse as sp
+import scipy.sparse.linalg as spla
+from threadpoolctl import threadpool_info
+
+try:
+    from loguru import logger as _loguru_logger
+except Exception:  # pragma: no cover - optional logger backend
+    _loguru_logger = None
 
 from spsolver import is_available, spanalyze, spfactorize, sprefactorize, spsolve
 from spsolver.bindings_superlu_dist import (
@@ -15,6 +23,84 @@ from spsolver.bindings_superlu_dist import (
     spfactorize as spfactorize_dist,
     spsolve as spsolve_dist,
 )
+
+
+_std_logger = logging.getLogger(__name__)
+_ENABLE_BACKEND_LOGGING = False
+_SERIAL_BACKEND_LOGGED = False
+_DIST_BACKEND_LOGGED = False
+_SCIPY_BACKEND_LOGGED = False
+
+
+def _log_info(message: str) -> None:
+    if _loguru_logger is not None:
+        _loguru_logger.info(message)
+        return
+    if _std_logger.handlers:
+        _std_logger.info(message)
+        return
+    print(message)
+
+
+def _detect_blas_backend() -> str:
+    infos = threadpool_info()
+    if not infos:
+        return "unknown"
+
+    tags = []
+    for info in infos:
+        tag = info.get("internal_api") or info.get("user_api") or info.get("prefix")
+        if tag and tag not in tags:
+            tags.append(tag)
+    return ", ".join(tags) if tags else "unknown"
+
+
+def _maybe_log_backend_once(
+    *,
+    use_superlu_dist: bool,
+    dist_config: DistSolveConfig | None,
+) -> None:
+    global _SERIAL_BACKEND_LOGGED, _DIST_BACKEND_LOGGED
+
+    if not _ENABLE_BACKEND_LOGGING:
+        return
+
+    blas = _detect_blas_backend()
+    if use_superlu_dist:
+        if _DIST_BACKEND_LOGGED:
+            return
+        if dist_config is None:
+            desc = "superlu_dist"
+        else:
+            desc = (
+                "superlu_dist"
+                f"(nrow={dist_config.nrow}, ncol={dist_config.ncol}, "
+                f"rowperm={dist_config.rowperm}, colperm={dist_config.colperm})"
+            )
+        _log_info(f"[fdfd_solver] backend: {desc}, BLAS backend: {blas}")
+        _DIST_BACKEND_LOGGED = True
+        return
+
+    if _SERIAL_BACKEND_LOGGED:
+        return
+    _log_info(f"[fdfd_solver] backend: superlu(nanobind), BLAS backend: {blas}")
+    _SERIAL_BACKEND_LOGGED = True
+
+
+def _maybe_log_scipy_backend_once() -> None:
+    global _SCIPY_BACKEND_LOGGED
+    if not _ENABLE_BACKEND_LOGGING or _SCIPY_BACKEND_LOGGED:
+        return
+
+    _log_info(f"[fdfd_solver] backend: scipy.spsolve, BLAS backend: {_detect_blas_backend()}")
+    _SCIPY_BACKEND_LOGGED = True
+
+
+def configure_fdfd_solver_backend_logging() -> None:
+    """Enable one-time backend/BLAS diagnostic logging for fdfd_solver."""
+
+    global _ENABLE_BACKEND_LOGGING
+    _ENABLE_BACKEND_LOGGING = True
 
 
 def _require_superlu_backend(use_superlu_dist: bool) -> None:
@@ -130,6 +216,10 @@ def make_solver(
     dist_config: DistSolveConfig | None = None,
 ):
     _require_superlu_backend(use_superlu_dist=use_superlu_dist)
+    _maybe_log_backend_once(
+        use_superlu_dist=use_superlu_dist,
+        dist_config=dist_config,
+    )
     cache = _SymbolicReuseCache() if enable_symbolic_reuse else None
     _register_reuse_cache(cache)
     cache_t = (
@@ -303,6 +393,116 @@ def make_solver_pair(
         use_superlu_dist=use_superlu_dist,
         dist_config=dist_config,
     )
+    return solve_single, solve_batch
+
+
+def _spsolve_scipy(A_csc: sp.csc_matrix, rhs: np.ndarray) -> np.ndarray:
+    rhs = np.asarray(rhs)
+
+    if rhs.ndim == 1:
+        return np.asarray(spla.spsolve(A_csc, rhs), dtype=rhs.dtype)
+
+    if rhs.ndim == 2:
+        # scipy.spsolve expects RHS shape (N, nrhs).
+        x_t = spla.spsolve(A_csc, rhs.T)
+        return np.asarray(x_t.T, dtype=rhs.dtype)
+
+    raise ValueError(f"rhs must be 1D or 2D, got ndim={rhs.ndim}")
+
+
+def make_solver_scipy():
+    _maybe_log_scipy_backend_once()
+
+    def _solve_impl(entries_a: jnp.ndarray, indices_a: jnp.ndarray, b: jnp.ndarray):
+        entries_a = np.asarray(entries_a)
+        b = np.asarray(b)
+        N = int(b.shape[-1] if b.ndim == 2 else b.shape[0])
+        A = sp.coo_matrix((entries_a, indices_a), shape=(N, N)).tocsc()
+        x = _spsolve_scipy(A, b)
+        return np.asarray(x, dtype=b.dtype)
+
+    def _adj_impl(entries_a: jnp.ndarray, indices_a: jnp.ndarray, g: jnp.ndarray):
+        entries_a = np.asarray(entries_a)
+        g = np.asarray(g)
+        N = int(g.shape[-1] if g.ndim == 2 else g.shape[0])
+        A_t = sp.coo_matrix((entries_a, indices_a), shape=(N, N)).tocsc().T.tocsc()
+        adj = _spsolve_scipy(A_t, -g)
+        return np.asarray(adj, dtype=g.dtype)
+
+    @jax.custom_vjp
+    def solve(entries_a, indices_a, b):
+        return jax.pure_callback(
+            _solve_impl, jax.ShapeDtypeStruct(b.shape, b.dtype), entries_a, indices_a, b
+        )
+
+    def solve_fwd(entries_a, indices_a, b):
+        x = solve(entries_a, indices_a, b)
+        return x, (entries_a, x, indices_a)
+
+    def solve_bwd(res, g):
+        entries_a, x, indices_a = res
+
+        adj = jax.pure_callback(
+            _adj_impl, jax.ShapeDtypeStruct(g.shape, g.dtype), entries_a, indices_a, g
+        )
+
+        i, j = indices_a
+        d_entries = adj[i] * x[j]
+        d_b = -adj
+        return d_entries, None, d_b
+
+    solve.defvjp(solve_fwd, solve_bwd)
+    return solve
+
+
+def make_batch_solver_scipy():
+    _maybe_log_scipy_backend_once()
+
+    def _solve_impl(entries_a, indices_a, b):
+        entries_a = np.asarray(entries_a)
+        b = np.asarray(b)
+        N = b.shape[1]
+        A = sp.coo_matrix((entries_a, indices_a), shape=(N, N)).tocsc()
+        x = _spsolve_scipy(A, b)
+        return np.asarray(x, dtype=b.dtype)
+
+    def _adj_impl(entries_a, indices_a, g):
+        entries_a = np.asarray(entries_a)
+        g = np.asarray(g)
+        N = g.shape[1]
+        A_t = sp.coo_matrix((entries_a, indices_a), shape=(N, N)).tocsc().T.tocsc()
+        adj = _spsolve_scipy(A_t, -g)
+        return np.asarray(adj, dtype=g.dtype)
+
+    @jax.custom_vjp
+    def solve(entries_a, indices_a, b):
+        return jax.pure_callback(
+            _solve_impl, jax.ShapeDtypeStruct(b.shape, b.dtype), entries_a, indices_a, b
+        )
+
+    def solve_fwd(entries_a, indices_a, b):
+        x = solve(entries_a, indices_a, b)
+        return x, (entries_a, x, indices_a)
+
+    def solve_bwd(res, g):
+        entries_a, x, indices_a = res
+
+        adj = jax.pure_callback(
+            _adj_impl, jax.ShapeDtypeStruct(g.shape, g.dtype), entries_a, indices_a, g
+        )
+
+        i, j = indices_a
+        d_entries = jnp.sum(adj[:, i] * x[:, j], axis=0)
+        d_b = -adj
+        return d_entries, None, d_b
+
+    solve.defvjp(solve_fwd, solve_bwd)
+    return solve
+
+
+def make_solver_pair_scipy():
+    solve_single = make_solver_scipy()
+    solve_batch = make_batch_solver_scipy()
     return solve_single, solve_batch
 
 

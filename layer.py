@@ -83,13 +83,17 @@ class Layer(flax.nnx.Module):
         self.basic = basic
         self.simulation_config = simulation_config or {}
         self.backend_name = self.simulation_config.get("backend", "ceviche")
+        self._is_fdfd_backend = self.backend_name in {
+            "fdfd_solver",
+            "fdfd_solver_scipy",
+        }
         self.enable_batch = bool(
             self.simulation_config.get(
                 "enable_batch",
-                self.backend_name == "fdfd_solver",
+                self._is_fdfd_backend,
             )
         )
-        self.enable_batch = self.enable_batch and self.backend_name == "fdfd_solver"
+        self.enable_batch = self.enable_batch and self._is_fdfd_backend
 
         self.epsr_total = bgc.epsr_parameterization(
             self.rho,
@@ -162,7 +166,7 @@ class Layer(flax.nnx.Module):
         # print(self.rho_jax.value)
         sources = jnp.sum(masks[:, :, None, None] * jnp.array(self.ics), axis=1)
 
-        if self.backend_name == "fdfd_solver":
+        if self._is_fdfd_backend:
             rho = self.rho_jax.value.reshape((self.grid["nx"], self.grid["ny"]))
             self.simulation.eps_r = bgc.epsr_parameterization(
                 rho,

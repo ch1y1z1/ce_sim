@@ -64,8 +64,25 @@
 
 ```bash
 cmake -S spsolver/nanobind -B spsolver/nanobind/build \
-  -DPython_EXECUTABLE=/home/chi/code/bysj/ce_sim/.venv/bin/python
+  -DPython_EXECUTABLE=/home/chi/code/bysj/ce_sim/.venv/bin/python \
+  -DCE_SUPERLU_USE_INTERNAL_BLAS=OFF \
+  -DCE_SUPERLU_BLA_VENDOR=OpenBLAS
 cmake --build spsolver/nanobind/build -j
+```
+
+说明：
+
+- 默认推荐链接系统 OpenBLAS（`CE_SUPERLU_USE_INTERNAL_BLAS=OFF`）。
+- 如需显式指定库路径，可加：
+
+```bash
+-DCE_SUPERLU_BLAS_LIBRARIES=/path/to/libopenblas.so
+```
+
+- 仅在系统 BLAS 不可用时，才建议回退内部 CBLAS：
+
+```bash
+-DCE_SUPERLU_USE_INTERNAL_BLAS=ON
 ```
 
 构建成功后会生成：
@@ -112,6 +129,37 @@ enable_symbolic_reuse = true
   - `simulation.superlu_dist.rowperm = 0`（单位行置换）
   - `simulation.superlu_dist.colperm = 0`（单位列置换）
 - 兼容性：可与 `enable_batch`、`enable_symbolic_reuse` 同时使用（仅 `fdfd_solver` 后端生效）。
+
+### SuperLU_DIST 构建建议（OpenBLAS 优先，2026-04-08）
+
+当前环境实测会自动发现系统 OpenBLAS，但仍建议显式写死 BLAS 选项，避免跨机器行为不一致：
+
+```bash
+cmake -S spsolver/superlu_dist -B spsolver/superlu_dist/build_openblas \
+  -DCMAKE_C_COMPILER=mpicc \
+  -DCMAKE_CXX_COMPILER=mpicxx \
+  -DBUILD_SHARED_LIBS=ON \
+  -Denable_python=ON \
+  -DXSDK_INDEX_SIZE=64 \
+  -DTPL_ENABLE_PARMETISLIB=OFF \
+  -DTPL_ENABLE_INTERNAL_BLASLIB=OFF \
+  -DTPL_BLAS_LIBRARIES:STRING=/usr/lib/x86_64-linux-gnu/libopenblas.so
+cmake --build spsolver/superlu_dist/build_openblas -j
+```
+
+说明：
+
+- `TPL_ENABLE_INTERNAL_BLASLIB=OFF`：强制不用 superlu_dist 内部 BLAS。
+- `TPL_BLAS_LIBRARIES:STRING=...`：显式指定系统 BLAS。推荐加 `:STRING`，避免缓存类型被误记为 BOOL。
+- `XSDK_INDEX_SIZE=64`：与当前工程 int64 索引链路保持一致。
+
+快速验收：
+
+```bash
+ldd spsolver/superlu_dist/build_openblas/SRC/libsuperlu_dist.so | rg -i "openblas|blas|lapack"
+```
+
+应看到类似 `libopenblas.so.0` 的链接结果。
 
 ## 2026-04-08 追加修复
 

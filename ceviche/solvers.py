@@ -1,6 +1,15 @@
+import logging
+
 import numpy as np
 import scipy.sparse.linalg as spl
-from threadpoolctl import threadpool_limits
+from threadpoolctl import threadpool_info, threadpool_limits
+
+try:
+    from loguru import logger as _loguru_logger
+except Exception:  # pragma: no cover - optional logger backend
+    _loguru_logger = None
+
+_std_logger = logging.getLogger(__name__)
 
 
 """ This file stores the various sparse linear system solvers you can use for FDFD """
@@ -33,10 +42,73 @@ ITERATIVE_METHODS = {
 # convergence tolerance for iterative solvers.
 ATOL = 1e-8
 
+
+# Backend policy switches.
+_FORCE_SCIPY_DIRECT = False
+_DISABLE_ITERATIVE = False
+_PRINT_BLAS_BACKEND = False
+_BLAS_BACKEND_PRINTED = False
+
+
+def _log_info(message: str) -> None:
+    if _loguru_logger is not None:
+        _loguru_logger.info(message)
+        return
+
+    if _std_logger.handlers:
+        _std_logger.info(message)
+        return
+
+    print(message)
+
+
+def _detect_blas_backend() -> str:
+    infos = threadpool_info()
+    if not infos:
+        return "unknown"
+
+    tags = []
+    for info in infos:
+        tag = info.get("internal_api") or info.get("user_api") or info.get("prefix")
+        if tag and tag not in tags:
+            tags.append(tag)
+    return ", ".join(tags) if tags else "unknown"
+
+
+def _maybe_print_blas_backend() -> None:
+    global _BLAS_BACKEND_PRINTED
+    if not _PRINT_BLAS_BACKEND or _BLAS_BACKEND_PRINTED:
+        return
+
+    _log_info(f"[ceviche] BLAS backend: {_detect_blas_backend()}")
+    _BLAS_BACKEND_PRINTED = True
+
+
+def configure_ceviche_backend_solver() -> None:
+    """Configure ceviche solver policy for the project backend.
+
+    Policy:
+    - Direct solve only (no iterative methods)
+    - Use scipy.sparse.linalg.spsolve only
+    - Print BLAS backend once for diagnostics
+    """
+
+    global _FORCE_SCIPY_DIRECT, _DISABLE_ITERATIVE, _PRINT_BLAS_BACKEND
+    _FORCE_SCIPY_DIRECT = True
+    _DISABLE_ITERATIVE = True
+    _PRINT_BLAS_BACKEND = True
+    _maybe_print_blas_backend()
+
 """ ========================== SOLVER FUNCTIONS ========================== """
 
 def solve_linear(A, b, iterative_method=False):
     """ Master function to call the others """
+
+    if _DISABLE_ITERATIVE and iterative_method:
+        raise RuntimeError(
+            "ceviche backend is configured for direct scipy.spsolve only; "
+            "iterative solvers are disabled."
+        )
 
     if iterative_method and iterative_method is not None:
         # if iterative solver string is supplied, use that method
@@ -51,6 +123,11 @@ def solve_linear(A, b, iterative_method=False):
 def _solve_direct(A, b):
     """ Direct solver """
 
+    if _FORCE_SCIPY_DIRECT:
+        _maybe_print_blas_backend()
+        with threadpool_limits(limits=1):
+            return spl.spsolve(A, b)
+
     if HAS_MKL:
         # prefered method using MKL. Much faster (on Mac at least)
         pSolve = pardisoSolver(A, mtype=13)
@@ -60,6 +137,7 @@ def _solve_direct(A, b):
         return x
     else:
         # scipy solver.
+        _maybe_print_blas_backend()
         with threadpool_limits(limits=1):
             return spl.spsolve(A, b)
 

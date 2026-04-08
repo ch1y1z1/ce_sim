@@ -24,8 +24,25 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(SUPERLU_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../superlu")
 
+option(
+  CE_SUPERLU_USE_INTERNAL_BLAS
+  "Build and use SuperLU internal CBLAS instead of system BLAS"
+  OFF
+)
+set(
+  CE_SUPERLU_BLA_VENDOR
+  "OpenBLAS"
+  CACHE STRING
+  "Preferred BLAS vendor passed to FindBLAS (e.g. OpenBLAS, Generic, Intel10_64lp)"
+)
+set(
+  CE_SUPERLU_BLAS_LIBRARIES
+  ""
+  CACHE STRING
+  "Optional semicolon-separated BLAS library list (overrides FindBLAS), e.g. /usr/lib/libopenblas.so"
+)
+
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(enable_internal_blaslib ON CACHE BOOL "" FORCE)
 set(enable_examples OFF CACHE BOOL "" FORCE)
 set(enable_tests OFF CACHE BOOL "" FORCE)
 set(enable_fortran OFF CACHE BOOL "" FORCE)
@@ -34,6 +51,25 @@ set(enable_single OFF CACHE BOOL "" FORCE)
 set(enable_double ON CACHE BOOL "" FORCE)
 set(enable_complex OFF CACHE BOOL "" FORCE)
 set(enable_complex16 ON CACHE BOOL "" FORCE)
+
+if (CE_SUPERLU_USE_INTERNAL_BLAS)
+  set(enable_internal_blaslib ON CACHE BOOL "" FORCE)
+  set(TPL_ENABLE_INTERNAL_BLASLIB ON CACHE BOOL "" FORCE)
+  message(STATUS "ce_superlu_nanobind: using SuperLU internal CBLAS")
+else()
+  set(enable_internal_blaslib OFF CACHE BOOL "" FORCE)
+  set(TPL_ENABLE_INTERNAL_BLASLIB OFF CACHE BOOL "" FORCE)
+
+  if (CE_SUPERLU_BLAS_LIBRARIES)
+    set(TPL_BLAS_LIBRARIES "${CE_SUPERLU_BLAS_LIBRARIES}" CACHE STRING "" FORCE)
+    message(STATUS "ce_superlu_nanobind: using user-specified BLAS libs: ${TPL_BLAS_LIBRARIES}")
+  else()
+    set(BLA_VENDOR "${CE_SUPERLU_BLA_VENDOR}" CACHE STRING "" FORCE)
+    find_package(BLAS REQUIRED)
+    set(TPL_BLAS_LIBRARIES "${BLAS_LIBRARIES}" CACHE STRING "" FORCE)
+    message(STATUS "ce_superlu_nanobind: using system BLAS (${BLA_VENDOR}): ${TPL_BLAS_LIBRARIES}")
+  endif()
+endif()
 
 add_subdirectory(${SUPERLU_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR}/superlu_build EXCLUDE_FROM_ALL)
 
