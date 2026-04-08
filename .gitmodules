@@ -1,0 +1,6 @@
+[submodule "spsolver/superlu"]
+	path = spsolver/superlu
+	url = https://github.com/xiaoyeli/superlu.git
+[submodule "spsolver/superlu_dist"]
+	path = spsolver/superlu_dist
+	url = https://github.com/xiaoyeli/superlu_dist.git
