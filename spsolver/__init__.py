@@ -1,5 +1,7 @@
 from .bindings_superlu import (
     is_available,
+    profile_phases,
+    profile_symbolic,
     spanalyze,
     spfactorize,
     sprefactorize,
@@ -8,6 +10,8 @@ from .bindings_superlu import (
 
 __all__ = [
     "is_available",
+    "profile_phases",
+    "profile_symbolic",
     "spanalyze",
     "spfactorize",
     "sprefactorize",

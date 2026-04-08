@@ -11,3 +11,5 @@ test/
 .ropeproject
 **/build/
 **/*.so
+experiments/
+figures/

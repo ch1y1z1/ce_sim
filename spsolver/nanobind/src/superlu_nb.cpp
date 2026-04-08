@@ -1,4 +1,5 @@
 #include <complex>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -35,6 +36,31 @@ using MatArrayRW = nb::ndarray<std::complex<double>,
                                nb::ndim<2>,
                                nb::c_contig,
                                nb::device::cpu>;
+
+constexpr const char *kPhaseNames[NPHASES] = {
+    "COLPERM",
+    "ROWPERM",
+    "RELAX",
+    "ETREE",
+    "EQUIL",
+    "SYMBFAC",
+    "DIST",
+    "FACT",
+    "COMM",
+    "COMM_DIAG",
+    "COMM_RIGHT",
+    "COMM_DOWN",
+    "SOL_COMM",
+    "SOL_GEMM",
+    "SOL_TRSM",
+    "SOL_TOT",
+    "RCOND",
+    "SOLVE",
+    "REFINE",
+    "TRSV",
+    "GEMV",
+    "FERR",
+};
 
 constexpr bool kComplexLayoutCompatible =
     sizeof(std::complex<double>) == sizeof(doublecomplex) &&
@@ -605,6 +631,230 @@ NB_MODULE(_superlu_nb, m) {
           nb::arg("factor"),
           nb::arg("nzval"),
           nb::call_guard<nb::gil_scoped_release>());
+
+    m.def("profile_symbolic",
+          [](const IndexArray &colptr,
+             const IndexArray &rowind,
+             size_t n,
+             int colperm) {
+              const size_t nnz = rowind.shape(0);
+              validate_csc_pattern(n, colptr, rowind, nnz);
+
+              std::vector<doublecomplex> values(nnz);
+              for (size_t i = 0; i < nnz; ++i) {
+                  values[i].r = 1.0;
+                  values[i].i = 0.0;
+              }
+
+              SuperMatrix A;
+              SuperMatrix AC;
+              std::memset(&A, 0, sizeof(SuperMatrix));
+              std::memset(&AC, 0, sizeof(SuperMatrix));
+
+              zCreate_CompCol_Matrix(&A,
+                                     static_cast<int>(n),
+                                     static_cast<int>(n),
+                                     static_cast<int_t>(nnz),
+                                     values.data(),
+                                     const_cast<int_t *>(rowind.data()),
+                                     const_cast<int_t *>(colptr.data()),
+                                     SLU_NC,
+                                     SLU_Z,
+                                     SLU_GE);
+
+              superlu_options_t options;
+              set_default_options(&options);
+              options.ColPerm = static_cast<colperm_t>(colperm);
+
+              std::vector<int> perm_c(n);
+              std::vector<int> etree(n);
+
+              const auto t0 = std::chrono::steady_clock::now();
+              get_perm_c(options.ColPerm, &A, perm_c.data());
+              const auto t1 = std::chrono::steady_clock::now();
+              sp_preorder(&options, &A, perm_c.data(), etree.data(), &AC);
+              const auto t2 = std::chrono::steady_clock::now();
+
+              Destroy_CompCol_Permuted(&AC);
+              Destroy_SuperMatrix_Store(&A);
+
+              const double t_perm_ms =
+                  std::chrono::duration<double, std::milli>(t1 - t0).count();
+              const double t_symb_ms =
+                  std::chrono::duration<double, std::milli>(t2 - t1).count();
+
+              nb::dict out;
+              out["t_perm_ms"] = nb::float_(t_perm_ms);
+              out["t_symb_ms"] = nb::float_(t_symb_ms);
+              out["nnz"] = nb::int_(nnz);
+              return out;
+          },
+          nb::arg("colptr"),
+          nb::arg("rowind"),
+          nb::arg("n"),
+          nb::arg("colperm") = static_cast<int>(COLAMD));
+
+    m.def("profile_phases",
+          [](const IndexArray &colptr,
+             const IndexArray &rowind,
+             const ComplexArrayRO &nzval,
+             size_t n,
+             int colperm) {
+              if (nzval.ndim() != 1) {
+                  throw std::runtime_error("nzval must be 1D.");
+              }
+              validate_csc_pattern(n, colptr, rowind, nzval.shape(0));
+
+              std::vector<doublecomplex> values;
+              fill_superlu_values(nzval, values);
+
+              superlu_options_t options;
+              set_default_options(&options);
+              options.Fact = DOFACT;
+              options.ColPerm = static_cast<colperm_t>(colperm);
+              options.Equil = NO;
+              options.IterRefine = NOREFINE;
+              options.PivotGrowth = NO;
+              options.ConditionNumber = NO;
+              options.PrintStat = NO;
+
+              std::vector<int> perm_c(n);
+              std::vector<int> perm_r(n);
+              std::vector<int> etree(n);
+              std::vector<double> R(n, 1.0);
+              std::vector<double> C(n, 1.0);
+              std::vector<double> ferr(1, 1.0);
+              std::vector<double> berr(1, 1.0);
+              std::vector<doublecomplex> rhs_b(n);
+              std::vector<doublecomplex> rhs_x(n);
+
+              for (size_t i = 0; i < n; ++i) {
+                  rhs_b[i].r = 1.0;
+                  rhs_b[i].i = 0.0;
+                  rhs_x[i].r = 0.0;
+                  rhs_x[i].i = 0.0;
+              }
+
+              SuperMatrix A;
+              SuperMatrix B;
+              SuperMatrix X;
+              SuperMatrix L;
+              SuperMatrix U;
+              std::memset(&A, 0, sizeof(SuperMatrix));
+              std::memset(&B, 0, sizeof(SuperMatrix));
+              std::memset(&X, 0, sizeof(SuperMatrix));
+              std::memset(&L, 0, sizeof(SuperMatrix));
+              std::memset(&U, 0, sizeof(SuperMatrix));
+
+              zCreate_CompCol_Matrix(&A,
+                                     static_cast<int>(n),
+                                     static_cast<int>(n),
+                                     static_cast<int_t>(nzval.shape(0)),
+                                     values.data(),
+                                     const_cast<int_t *>(rowind.data()),
+                                     const_cast<int_t *>(colptr.data()),
+                                     SLU_NC,
+                                     SLU_Z,
+                                     SLU_GE);
+              zCreate_Dense_Matrix(&B,
+                                   static_cast<int>(n),
+                                   1,
+                                   rhs_b.data(),
+                                   static_cast<int>(n),
+                                   SLU_DN,
+                                   SLU_Z,
+                                   SLU_GE);
+              zCreate_Dense_Matrix(&X,
+                                   static_cast<int>(n),
+                                   1,
+                                   rhs_x.data(),
+                                   static_cast<int>(n),
+                                   SLU_DN,
+                                   SLU_Z,
+                                   SLU_GE);
+
+              GlobalLU_t glu;
+              std::memset(&glu, 0, sizeof(GlobalLU_t));
+              mem_usage_t mem_usage;
+              std::memset(&mem_usage, 0, sizeof(mem_usage_t));
+              SuperLUStat_t stat;
+              StatInit(&stat);
+
+              char equed[1] = {'N'};
+              double recip_pivot_growth = 0.0;
+              double rcond = 0.0;
+              int_t info = 0;
+
+              zgssvx(&options,
+                     &A,
+                     perm_c.data(),
+                     perm_r.data(),
+                     etree.data(),
+                     equed,
+                     R.data(),
+                     C.data(),
+                     &L,
+                     &U,
+                     nullptr,
+                     0,
+                     &B,
+                     &X,
+                     &recip_pivot_growth,
+                     &rcond,
+                     ferr.data(),
+                     berr.data(),
+                     &glu,
+                     &mem_usage,
+                     &stat,
+                     &info);
+
+              nb::dict phase_ms;
+              nb::dict phase_ops;
+              for (int i = 0; i < static_cast<int>(NPHASES); ++i) {
+                  const double t_ms = stat.utime[i] * 1e3;
+                  phase_ms[kPhaseNames[i]] = nb::float_(t_ms);
+                  phase_ops[kPhaseNames[i]] = nb::float_(stat.ops[i]);
+              }
+
+              const double t_perm_ms = stat.utime[COLPERM] * 1e3;
+              const double t_symb_ms =
+                  (stat.utime[ETREE] + stat.utime[RELAX] + stat.utime[SYMBFAC]) * 1e3;
+              const double t_num_ms = stat.utime[FACT] * 1e3;
+              const double t_solve_ms = stat.utime[SOLVE] * 1e3;
+              const double t_total_ms = t_perm_ms + t_symb_ms + t_num_ms + t_solve_ms;
+
+              StatFree(&stat);
+              if (L.Store != nullptr) {
+                  Destroy_SuperNode_Matrix(&L);
+              }
+              if (U.Store != nullptr) {
+                  Destroy_CompCol_Matrix(&U);
+              }
+              Destroy_SuperMatrix_Store(&A);
+              Destroy_SuperMatrix_Store(&B);
+              Destroy_SuperMatrix_Store(&X);
+
+              if (info != 0) {
+                  throw std::runtime_error("SuperLU profile_phases failed, info=" +
+                                           std::to_string(static_cast<long long>(info)));
+              }
+
+              nb::dict out;
+              out["phase_ms"] = phase_ms;
+              out["phase_ops"] = phase_ops;
+              out["t_perm_ms"] = nb::float_(t_perm_ms);
+              out["t_symb_ms"] = nb::float_(t_symb_ms);
+              out["t_num_ms"] = nb::float_(t_num_ms);
+              out["t_solve_ms"] = nb::float_(t_solve_ms);
+              out["t_total_ms"] = nb::float_(t_total_ms);
+              out["nnz"] = nb::int_(nzval.shape(0));
+              return out;
+          },
+          nb::arg("colptr"),
+          nb::arg("rowind"),
+          nb::arg("nzval"),
+          nb::arg("n"),
+          nb::arg("colperm") = static_cast<int>(COLAMD));
 
     m.def("spsolve",
           [](ZFactor &factor, const VecArrayRW &rhs, bool overwrite_b, bool transpose) {

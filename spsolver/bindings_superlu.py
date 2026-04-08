@@ -16,6 +16,8 @@ try:
     _spanalyze_nb = _nb.spanalyze
     _sprefactorize_nb = _nb.sprefactorize
     _spsolve_nb = _nb.spsolve
+    _profile_symbolic_nb = getattr(_nb, "profile_symbolic", None)
+    _profile_phases_nb = getattr(_nb, "profile_phases", None)
 
     _HAS_NANOBIND_SUPERLU = True
 except Exception as exc:  # pragma: no cover - import behavior depends on local build
@@ -106,3 +108,65 @@ def spsolve(
             transpose=transpose,
         )
     )
+
+
+def profile_symbolic(A: sp.spmatrix, colperm: int = 3) -> dict[str, float]:
+    _require_backend()
+    if _profile_symbolic_nb is None:
+        raise RuntimeError(
+            "profile_symbolic is unavailable in current _superlu_nb build. "
+            "Please rebuild spsolver/nanobind."
+        )
+
+    if not sp.isspmatrix(A):
+        raise TypeError("profile_symbolic expects a scipy.sparse matrix")
+    if A.shape[0] != A.shape[1]:
+        raise ValueError(f"matrix must be square, got {A.shape}")
+
+    csc = A if sp.isspmatrix_csc(A) else A.tocsc()
+    indptr = np.asarray(csc.indptr, dtype=_index_dtype(), order="C")
+    indices = np.asarray(csc.indices, dtype=_index_dtype(), order="C")
+
+    raw = _profile_symbolic_nb(indptr, indices, int(csc.shape[0]), int(colperm))
+    return {
+        "t_perm_ms": float(raw["t_perm_ms"]),
+        "t_symb_ms": float(raw["t_symb_ms"]),
+        "nnz": float(raw["nnz"]),
+    }
+
+
+def profile_phases(A: sp.spmatrix, colperm: int = 3) -> dict[str, Any]:
+    _require_backend()
+    if _profile_phases_nb is None:
+        raise RuntimeError(
+            "profile_phases is unavailable in current _superlu_nb build. "
+            "Please rebuild spsolver/nanobind."
+        )
+
+    if not sp.isspmatrix(A):
+        raise TypeError("profile_phases expects a scipy.sparse matrix")
+    if A.shape[0] != A.shape[1]:
+        raise ValueError(f"matrix must be square, got {A.shape}")
+
+    csc = A if sp.isspmatrix_csc(A) else A.tocsc()
+    indptr = np.asarray(csc.indptr, dtype=_index_dtype(), order="C")
+    indices = np.asarray(csc.indices, dtype=_index_dtype(), order="C")
+    data = np.asarray(csc.data, dtype=np.complex128, order="C")
+
+    raw = _profile_phases_nb(indptr, indices, data, int(csc.shape[0]), int(colperm))
+    phase_ms_raw = raw["phase_ms"]
+    phase_ops_raw = raw["phase_ops"]
+
+    phase_ms = {str(k): float(phase_ms_raw[k]) for k in phase_ms_raw}
+    phase_ops = {str(k): float(phase_ops_raw[k]) for k in phase_ops_raw}
+
+    return {
+        "phase_ms": phase_ms,
+        "phase_ops": phase_ops,
+        "t_perm_ms": float(raw["t_perm_ms"]),
+        "t_symb_ms": float(raw["t_symb_ms"]),
+        "t_num_ms": float(raw["t_num_ms"]),
+        "t_solve_ms": float(raw["t_solve_ms"]),
+        "t_total_ms": float(raw["t_total_ms"]),
+        "nnz": float(raw["nnz"]),
+    }
