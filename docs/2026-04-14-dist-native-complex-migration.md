@@ -82,3 +82,8 @@ python experiment_dist_parallel.py --legacy-real-block
 - 图像产出由 1 张扩展为 2 张：
   - [figures/parallel_config_factor_speedup.png](figures/parallel_config_factor_speedup.png)
   - [figures/parallel_config_solve_speedup.png](figures/parallel_config_solve_speedup.png)
+
+## 8. 训练总耗时日志
+
+- [train.py](train.py) 在完成初始化后、进入首个 epoch 前开始计时。
+- 在 epoch 循环结束后输出总用时日志：`训练总用时（epoch阶段）: ...s`。

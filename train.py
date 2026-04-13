@@ -245,6 +245,9 @@ def main(
 
     train_step = nnx.jit(train_step_impl) if enable_jit else train_step_impl
 
+    # 训练总计时：从首个 epoch 开始前计时
+    train_total_start = time.time()
+
     # 训练模型
     for epoch in range(train_config["num_epochs"]):
         # 记录开始时间
@@ -307,6 +310,9 @@ def main(
                 )
                 # 关闭图像
                 plt.close(fig)
+
+    train_total_elapsed = time.time() - train_total_start
+    logger.info(f"训练总用时（epoch阶段）: {train_total_elapsed:.3f}s")
 
     # 等待检查点器完成
     ckptr.wait_until_finished()

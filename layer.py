@@ -71,9 +71,9 @@ class Layer(flax.nnx.Module):
             basic: 基础物理参数字典
             simulation_config: 仿真后端配置
         """
-        n_bits_i = input["n_bits"]
-        grid["ny"] = int((288 - 20) / 25 * (2 * n_bits_i + 1) + 20)
-        grid["nx"] = int(128)
+        # n_bits_i = input["n_bits"]
+        # grid["ny"] = int((288 - 20) / 25 * (2 * n_bits_i + 1) + 20)
+        # grid["nx"] = int(128)
         self.rho, self.bg_rho, self.opt_region, self.input_list, self.output_list = (
             bgc.init_layer(grid, input, output)
         )
