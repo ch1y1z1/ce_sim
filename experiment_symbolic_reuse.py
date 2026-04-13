@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
@@ -15,7 +14,7 @@ from loguru import logger
 
 from fdfd_solver.constants import EPSILON_0, MU_0
 from fdfd_solver.dxy_matrix import DxyMatrix
-from spsolver import profile_phases, spanalyze, sprefactorize, spsolve
+from spsolver import profile_phases
 
 C0 = 1.0 / math.sqrt(EPSILON_0 * MU_0)
 
@@ -44,13 +43,6 @@ class FullTiming:
     t_num_ms: float
     t_solve_ms: float
     t_total_ms: float
-
-
-@dataclass
-class ReuseTiming:
-    t_num_ms: float
-    t_solve_ms: float
-    t_reuse_ms: float
 
 
 def _ensure_parent(path: Path) -> None:
@@ -102,12 +94,6 @@ def _build_fdfd_matrix(
     return (lap + diag).tocsc()
 
 
-def _rhs(n_dof: int, rng: np.random.Generator) -> np.ndarray:
-    real = rng.standard_normal(n_dof)
-    imag = rng.standard_normal(n_dof)
-    return (real + 1j * imag).astype(np.complex128)
-
-
 def _run_full_once(
     A: sp.csc_matrix,
     colperm: int,
@@ -117,7 +103,8 @@ def _run_full_once(
     t_symb = float(prof["t_symb_ms"])
     t_num_ms = float(prof["t_num_ms"])
     t_solve_ms = float(prof["t_solve_ms"])
-    t_total_ms = float(prof["t_total_ms"])
+    # Factorization-only total (exclude solve/refine and other post-factor stages).
+    t_total_ms = t_perm + t_symb + t_num_ms
 
     return FullTiming(
         t_perm_ms=t_perm,
@@ -128,23 +115,9 @@ def _run_full_once(
     )
 
 
-def _run_reuse_once(
-    A_symbolic: sp.csc_matrix,
-    A_update: sp.csc_matrix,
-    b: np.ndarray,
-) -> ReuseTiming:
-    factor = spanalyze(A_symbolic)
-
-    t0 = time.perf_counter()
-    sprefactorize(factor, np.asarray(A_update.data, dtype=np.complex128, order="C"))
-    t1 = time.perf_counter()
-    _ = spsolve(factor, b, overwrite_b=False)
-    t2 = time.perf_counter()
-
-    t_num_ms = (t1 - t0) * 1e3
-    t_solve_ms = (t2 - t1) * 1e3
-    t_reuse_ms = (t2 - t0) * 1e3
-    return ReuseTiming(t_num_ms=t_num_ms, t_solve_ms=t_solve_ms, t_reuse_ms=t_reuse_ms)
+def _estimate_reuse_ms_from_full(full: FullTiming) -> float:
+    # Reuse estimate from the same sample: remove permutation and symbolic costs.
+    return full.t_total_ms - full.t_perm_ms - full.t_symb_ms
 
 
 def _mean(vals: Iterable[float]) -> float:
@@ -351,27 +324,27 @@ def main(
     rows: list[ReuseBenchRow] = []
     for n in ns:
         logger.info(f"Benchmark n={n}")
-        eps_base, eps_update = _build_eps_pair(n, eps_si, eps_sio2, rng)
-        A_base = _build_fdfd_matrix(eps_base, wavelength, points_per_wavelength, npml)
+        _, eps_update = _build_eps_pair(n, eps_si, eps_sio2, rng)
         A_update = _build_fdfd_matrix(eps_update, wavelength, points_per_wavelength, npml)
 
         N = n * n
         nnz = int(A_update.nnz)
         sparsity_percent = 100.0 * nnz / float(N * N)
-        b = _rhs(N, rng)
 
         full_runs: list[FullTiming] = []
-        reuse_runs: list[ReuseTiming] = []
+        reuse_est_runs: list[float] = []
         for _ in range(repeats):
-            full_runs.append(_run_full_once(A_update, colperm=colperm))
-            reuse_runs.append(_run_reuse_once(A_base, A_update, b))
+            full = _run_full_once(A_update, colperm=colperm)
+            full_runs.append(full)
+            t_reuse_est = _estimate_reuse_ms_from_full(full)
+            reuse_est_runs.append(t_reuse_est)
 
         t_perm = _mean(x.t_perm_ms for x in full_runs)
         t_symb = _mean(x.t_symb_ms for x in full_runs)
         t_num = _mean(x.t_num_ms for x in full_runs)
         t_solve = _mean(x.t_solve_ms for x in full_runs)
         t_total = _mean(x.t_total_ms for x in full_runs)
-        t_reuse = _mean(x.t_reuse_ms for x in reuse_runs)
+        t_reuse = _mean(reuse_est_runs)
         speedup = t_total / t_reuse if t_reuse > 0 else float("nan")
 
         row = ReuseBenchRow(
@@ -389,7 +362,7 @@ def main(
         )
         rows.append(row)
         logger.info(
-            f"n={n}, N={N}, nnz={nnz}, total={t_total:.3f} ms, reuse={t_reuse:.3f} ms, speedup={speedup:.3f}x"
+            f"n={n}, N={N}, nnz={nnz}, factor_total={t_total:.3f} ms, reuse_est={t_reuse:.3f} ms, speedup={speedup:.3f}x"
         )
 
     csv_path = Path(out_csv)
