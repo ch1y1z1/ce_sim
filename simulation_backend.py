@@ -218,6 +218,7 @@ def build_simulation_backend(
             launcher=dist_cfg_raw.get("launcher"),
             launcher_extra_args=launcher_extra_args,
             wait_timeout_sec=float(dist_cfg_raw.get("wait_timeout_sec", 600.0)),
+            native_complex=bool(dist_cfg_raw.get("native_complex", True)),
         )
         return FdfdSolverEzBackend(
             omega,

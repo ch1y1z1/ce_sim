@@ -5,6 +5,8 @@
 - superlu（串行）
 - superlu_dist（1 task / 1 thread / 1x1）
 
+默认使用 superlu_dist native complex 绑定（complex128 直接走分布式复数路径）；可通过开关回退到 legacy real 2N block 路径做对照。
+
 在相同 200x200 FDFD 问题上的 factor 与 solve 耗时，并量化 dist 启动常数项。
 
 ## 1. 运行
@@ -25,11 +27,21 @@ python experiment_dist_vs_serial.py \
   --launcher mpirun
 ```
 
+若需要回退到 legacy real block 路径：
+
+```bash
+python experiment_dist_vs_serial.py --legacy-real-block
+```
+
 ## 2. 输出
 
 - [experiments/dist_parallel/serial_vs_dist_baseline.csv](experiments/dist_parallel/serial_vs_dist_baseline.csv)
 - [experiments/dist_parallel/serial_vs_dist_baseline_rows.tex](experiments/dist_parallel/serial_vs_dist_baseline_rows.tex)
 - [experiments/dist_parallel/serial_vs_dist_baseline.toml](experiments/dist_parallel/serial_vs_dist_baseline.toml)
+
+其中 TOML 会额外记录：
+
+- `dist_runtime.native_complex`: 当前是否启用 native complex 路径
 
 ## 3. 指标说明
 

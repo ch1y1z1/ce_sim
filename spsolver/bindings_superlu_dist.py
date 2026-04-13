@@ -29,6 +29,7 @@ class DistSolveConfig:
     launcher: Optional[str] = None
     launcher_extra_args: tuple[str, ...] = ()
     wait_timeout_sec: float = 600.0
+    native_complex: bool = True
 
 
 def _has_superlu_python_lib(path: Path) -> bool:
@@ -282,8 +283,13 @@ class _DistWorkerSession:
     def _set_flag(self, flag: str) -> None:
         self._control_file.write_text(flag, encoding="utf-8")
 
-    def factorize(self, A: sp.csc_matrix) -> None:
-        payload = (A, int(self._config.int64), int(self._config.algo3d))
+    def factorize(self, A: sp.csc_matrix, use_native_complex: bool) -> None:
+        payload = (
+            A,
+            int(self._config.int64),
+            int(self._config.algo3d),
+            bool(use_native_complex),
+        )
         with self._data_file.open("wb") as f:
             pickle.dump(payload, f)
 
@@ -303,7 +309,7 @@ class _DistWorkerSession:
 
         with self._result_file.open("rb") as f:
             out = pickle.load(f)
-        return np.asarray(out, dtype=np.float64)
+        return np.asarray(out)
 
     def free_lu(self) -> None:
         self._set_flag("free")
@@ -367,6 +373,7 @@ class DistFactor:
     def __init__(self, A: sp.csc_matrix, config: DistSolveConfig):
         self._config = config
         self._session = _get_session(config)
+        self._native_complex = bool(config.native_complex)
         self._n = int(A.shape[0])
         self._indptr = np.asarray(A.indptr).copy()
         self._indices = np.asarray(A.indices).copy()
@@ -383,10 +390,32 @@ class DistFactor:
         if not np.array_equal(indptr, self._indptr) or not np.array_equal(indices, self._indices):
             raise ValueError("superlu_dist factor pattern changed unexpectedly")
 
-        A_real = _complex_to_real_block_csc(A)
-        self._session.factorize(A_real)
+        if self._native_complex:
+            self._session.factorize(A, use_native_complex=True)
+        else:
+            A_real = _complex_to_real_block_csc(A)
+            self._session.factorize(A_real, use_native_complex=False)
 
     def solve_inplace(self, rhs: np.ndarray) -> None:
+        if self._native_complex:
+            if rhs.ndim == 1:
+                if rhs.shape[0] != self._n:
+                    raise ValueError(f"rhs length mismatch: expected {self._n}, got {rhs.shape[0]}")
+                rhs2 = np.asfortranarray(rhs.reshape(self._n, 1), dtype=np.complex128)
+                out = self._session.solve(rhs2)
+                rhs[:] = np.asarray(out[:, 0], dtype=np.complex128)
+                return
+
+            if rhs.ndim != 2:
+                raise ValueError(f"rhs must be 1D or 2D, got ndim={rhs.ndim}")
+            if rhs.shape[1] != self._n:
+                raise ValueError(f"rhs second dimension mismatch: expected {self._n}, got {rhs.shape[1]}")
+
+            batch = rhs.shape[0]
+            for i in range(batch):
+                self.solve_inplace(rhs[i])
+            return
+
         if rhs.ndim == 1:
             if rhs.shape[0] != self._n:
                 raise ValueError(f"rhs length mismatch: expected {self._n}, got {rhs.shape[0]}")

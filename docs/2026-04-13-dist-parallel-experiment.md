@@ -4,8 +4,11 @@
 
 - 并行配置结果表数据（CSV）
 - LaTeX 表格行（可直接填入论文）
-- 速度提升图 [figures/parallel_config_speedup.png](figures/parallel_config_speedup.png)
+- 分解速度提升图 [figures/parallel_config_factor_speedup.png](figures/parallel_config_factor_speedup.png)
+- 求解速度提升图 [figures/parallel_config_solve_speedup.png](figures/parallel_config_solve_speedup.png)
 - 元数据（TOML）
+
+默认使用 superlu_dist native complex 绑定（complex128 直接走分布式复数路径）；可通过开关回退到 legacy real 2N block 路径做 A/B 对照。
 
 ## 1. 运行实验
 
@@ -25,6 +28,12 @@ python experiment_dist_parallel.py \
   --repeats 10 \
   --warmup 1 \
   --launcher mpirun
+```
+
+若需要回退到 legacy real block 路径：
+
+```bash
+python experiment_dist_parallel.py --legacy-real-block
 ```
 
 若在 Slurm 作业中希望改用 srun，可指定：
@@ -48,7 +57,8 @@ python experiment_dist_parallel.py --redraw-only
 ```bash
 python experiment_dist_parallel.py --redraw-only \
   --redraw-from-csv experiments/dist_parallel/parallel_config.csv \
-  --out-plot figures/parallel_config_speedup.png
+  --out-plot-factor figures/parallel_config_factor_speedup.png \
+  --out-plot-solve figures/parallel_config_solve_speedup.png
 ```
 
 ## 3. 输出文件
@@ -56,14 +66,21 @@ python experiment_dist_parallel.py --redraw-only \
 - [experiments/dist_parallel/parallel_config.csv](experiments/dist_parallel/parallel_config.csv)
 - [experiments/dist_parallel/parallel_config_rows.tex](experiments/dist_parallel/parallel_config_rows.tex)
 - [experiments/dist_parallel/parallel_config.toml](experiments/dist_parallel/parallel_config.toml)
-- [figures/parallel_config_speedup.png](figures/parallel_config_speedup.png)
+- [figures/parallel_config_factor_speedup.png](figures/parallel_config_factor_speedup.png)
+- [figures/parallel_config_solve_speedup.png](figures/parallel_config_solve_speedup.png)
+
+其中 TOML 会额外记录：
+
+- `dist_runtime.native_complex`: 当前是否启用 native complex 路径
 
 ## 4. 字段说明
 
 - ntasks: MPI 进程数
 - cpus_per_task: 每进程线程数（通过 OMP_NUM_THREADS 等环境变量设置）
 - nrow, ncol: SuperLU_DIST 二维进程网格
-- factor_time_s: 数值分解耗时（秒）
-- speedup: 相对于基准配置 (1 task, 1 thread, 1x1) 的加速比
+- factor_time_s: 稳态数值分解耗时（秒）
+- solve_time_s: 稳态求解耗时（秒）
+- speedup: factor 相对于串行 warm refactorize 的加速比
+- solve_speedup: solve 相对于串行 warm solve 的加速比
 - status: ok 或 failed
 - error: 失败时的错误信息

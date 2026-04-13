@@ -20,8 +20,13 @@ from fdfd_solver.constants import EPSILON_0, MU_0
 from fdfd_solver.dxy_matrix import DxyMatrix
 from spsolver import profile_phases as profile_phases_serial
 from spsolver import sprefactorize as sprefactorize_serial
+from spsolver import spsolve as spsolve_serial
 from spsolver import spanalyze as spanalyze_serial
-from spsolver.bindings_superlu_dist import DistSolveConfig, spfactorize as spfactorize_dist
+from spsolver.bindings_superlu_dist import (
+    DistSolveConfig,
+    spfactorize as spfactorize_dist,
+    spsolve as spsolve_dist,
+)
 
 C0 = 1.0 / math.sqrt(EPSILON_0 * MU_0)
 
@@ -44,7 +49,9 @@ class ParallelRow:
     ncol: int
     grid: str
     factor_time_s: float
+    solve_time_s: float
     speedup: float
+    solve_speedup: float
     status: str
     error: str
     cold_full_factor_s: float = float("nan")
@@ -56,6 +63,7 @@ class ParallelRow:
     superlu_profile_status: str = "na"
     superlu_profile_error: str = ""
     serial_baseline_refactorize_s: float = float("nan")
+    serial_baseline_solve_s: float = float("nan")
 
 
 def _ensure_parent(path: Path) -> None:
@@ -196,10 +204,11 @@ def _profile_superlu_factor_breakdown(A: sp.csc_matrix, *, colperm: int) -> dict
 
 def _measure_serial_factor_time(
     A: sp.csc_matrix,
+    b: np.ndarray,
     *,
     repeats: int,
     warmup: int,
-) -> tuple[float, float, str]:
+) -> tuple[float, float, float, str]:
     old_env = _set_thread_env(1)
     try:
         nzval = np.asarray(A.data, dtype=np.complex128, order="C")
@@ -212,23 +221,29 @@ def _measure_serial_factor_time(
 
         for _ in range(max(0, warmup)):
             sprefactorize_serial(factor, nzval)
+            _ = spsolve_serial(factor, b, overwrite_b=False)
 
-        samples: list[float] = []
+        factor_samples: list[float] = []
+        solve_samples: list[float] = []
         for _ in range(repeats):
             t2 = time.perf_counter()
             sprefactorize_serial(factor, nzval)
             t3 = time.perf_counter()
-            samples.append(t3 - t2)
+            _ = spsolve_serial(factor, b, overwrite_b=False)
+            t4 = time.perf_counter()
+            factor_samples.append(t3 - t2)
+            solve_samples.append(t4 - t3)
 
-        return cold_full_factor, _mean(samples), ""
+        return cold_full_factor, _mean(factor_samples), _mean(solve_samples), ""
     except Exception as exc:
-        return float("nan"), float("nan"), f"{type(exc).__name__}: {exc}"
+        return float("nan"), float("nan"), float("nan"), f"{type(exc).__name__}: {exc}"
     finally:
         _restore_thread_env(old_env)
 
 
-def _measure_factor_time(
+def _measure_factor_solve_time(
     A: sp.csc_matrix,
+    b: np.ndarray,
     spec: ParallelSpec,
     *,
     repeats: int,
@@ -242,7 +257,8 @@ def _measure_factor_time(
     launcher_extra_args: tuple[str, ...],
     wait_timeout_sec: float,
     library_path: Optional[str],
-) -> tuple[float, float, str]:
+    native_complex: bool,
+) -> tuple[float, float, float, str]:
     old_env = _set_thread_env(spec.cpus_per_task)
     try:
         _cleanup_dist_sessions()
@@ -258,6 +274,7 @@ def _measure_factor_time(
             launcher=launcher,
             launcher_extra_args=launcher_extra_args,
             wait_timeout_sec=wait_timeout_sec,
+            native_complex=native_complex,
         )
 
         t_cold0 = time.perf_counter()
@@ -267,19 +284,24 @@ def _measure_factor_time(
 
         for _ in range(max(0, warmup)):
             factor.refactorize(A)
+            _ = spsolve_dist(factor, b, overwrite_b=False)
 
-        times: list[float] = []
+        factor_times: list[float] = []
+        solve_times: list[float] = []
         for _ in range(repeats):
             t0 = time.perf_counter()
             factor.refactorize(A)
             t1 = time.perf_counter()
-            times.append(t1 - t0)
+            _ = spsolve_dist(factor, b, overwrite_b=False)
+            t2 = time.perf_counter()
+            factor_times.append(t1 - t0)
+            solve_times.append(t2 - t1)
 
         _cleanup_dist_sessions()
-        return cold_full_factor, _mean(times), ""
+        return cold_full_factor, _mean(factor_times), _mean(solve_times), ""
     except Exception as exc:
         _cleanup_dist_sessions()
-        return float("nan"), float("nan"), f"{type(exc).__name__}: {exc}"
+        return float("nan"), float("nan"), float("nan"), f"{type(exc).__name__}: {exc}"
     finally:
         _restore_thread_env(old_env)
 
@@ -306,9 +328,11 @@ def _write_csv(rows: list[ParallelRow], path: Path) -> None:
                 "ncol",
                 "grid",
                 "factor_time_s",
+                "solve_time_s",
                 "cold_full_factor_s",
                 "warm_refactorize_s",
                 "speedup",
+                "solve_speedup",
                 "superlu_profile_colperm",
                 "superlu_phase_colperm_ms",
                 "superlu_phase_etree_ms",
@@ -316,6 +340,7 @@ def _write_csv(rows: list[ParallelRow], path: Path) -> None:
                 "superlu_profile_status",
                 "superlu_profile_error",
                 "serial_baseline_refactorize_s",
+                "serial_baseline_solve_s",
                 "status",
                 "error",
             ]
@@ -329,9 +354,11 @@ def _write_csv(rows: list[ParallelRow], path: Path) -> None:
                     row.ncol,
                     row.grid,
                     f"{row.factor_time_s:.9e}" if math.isfinite(row.factor_time_s) else "nan",
+                    f"{row.solve_time_s:.9e}" if math.isfinite(row.solve_time_s) else "nan",
                     f"{row.cold_full_factor_s:.9e}" if math.isfinite(row.cold_full_factor_s) else "nan",
                     f"{row.warm_refactorize_s:.9e}" if math.isfinite(row.warm_refactorize_s) else "nan",
                     f"{row.speedup:.6f}" if math.isfinite(row.speedup) else "nan",
+                    f"{row.solve_speedup:.6f}" if math.isfinite(row.solve_speedup) else "nan",
                     str(row.superlu_profile_colperm) if row.superlu_profile_colperm >= 0 else "na",
                     f"{row.superlu_phase_colperm_ms:.9e}" if math.isfinite(row.superlu_phase_colperm_ms) else "nan",
                     f"{row.superlu_phase_etree_ms:.9e}" if math.isfinite(row.superlu_phase_etree_ms) else "nan",
@@ -339,6 +366,7 @@ def _write_csv(rows: list[ParallelRow], path: Path) -> None:
                     row.superlu_profile_status,
                     row.superlu_profile_error,
                     f"{row.serial_baseline_refactorize_s:.9e}" if math.isfinite(row.serial_baseline_refactorize_s) else "nan",
+                    f"{row.serial_baseline_solve_s:.9e}" if math.isfinite(row.serial_baseline_solve_s) else "nan",
                     row.status,
                     row.error,
                 ]
@@ -359,6 +387,7 @@ def _read_csv(path: Path) -> list[ParallelRow]:
             "ncol",
             "grid",
             "factor_time_s",
+            "solve_time_s",
             "speedup",
             "status",
             "error",
@@ -368,7 +397,9 @@ def _read_csv(path: Path) -> list[ParallelRow]:
 
         for item in reader:
             ft = float(item["factor_time_s"]) if item["factor_time_s"] else float("nan")
+            solve_t = float(item.get("solve_time_s", "nan") or "nan")
             spd = float(item["speedup"]) if item["speedup"] else float("nan")
+            solve_spd = float(item.get("solve_speedup", "nan") or "nan")
             cold = float(item.get("cold_full_factor_s", "nan") or "nan")
             warm = float(item.get("warm_refactorize_s", item.get("factor_time_s", "nan")) or "nan")
             prof_colperm_text = item.get("superlu_profile_colperm", "na")
@@ -380,7 +411,9 @@ def _read_csv(path: Path) -> list[ParallelRow]:
                     ncol=int(item["ncol"]),
                     grid=item["grid"],
                     factor_time_s=ft,
+                    solve_time_s=solve_t,
                     speedup=spd,
+                    solve_speedup=solve_spd,
                     status=item["status"],
                     error=item["error"],
                     cold_full_factor_s=cold,
@@ -394,6 +427,9 @@ def _read_csv(path: Path) -> list[ParallelRow]:
                     serial_baseline_refactorize_s=float(
                         item.get("serial_baseline_refactorize_s", "nan") or "nan"
                     ),
+                    serial_baseline_solve_s=float(
+                        item.get("serial_baseline_solve_s", "nan") or "nan"
+                    ),
                 )
             )
 
@@ -406,29 +442,44 @@ def _write_latex_rows(rows: list[ParallelRow], path: Path) -> None:
     _ensure_parent(path)
     lines: list[str] = []
     for row in rows:
-        t = f"{row.factor_time_s:.3e}" if math.isfinite(row.factor_time_s) else "---"
-        s = f"{row.speedup:.2f}\\times" if math.isfinite(row.speedup) else "---"
+        ft = f"{row.factor_time_s:.3e}" if math.isfinite(row.factor_time_s) else "---"
+        st = f"{row.solve_time_s:.3e}" if math.isfinite(row.solve_time_s) else "---"
+        fs = f"{row.speedup:.2f}\\times" if math.isfinite(row.speedup) else "---"
+        ss = f"{row.solve_speedup:.2f}\\times" if math.isfinite(row.solve_speedup) else "---"
         lines.append(
-            "{nt} & {cp} & ${nr}\\times{nc}$ & {t} & {s} \\\\".format(
+            "{nt} & {cp} & ${nr}\\times{nc}$ & {ft} & {st} & {fs} & {ss} \\\\".format(
                 nt=row.ntasks,
                 cp=row.cpus_per_task,
                 nr=row.nrow,
                 nc=row.ncol,
-                t=t,
-                s=s,
+                ft=ft,
+                st=st,
+                fs=fs,
+                ss=ss,
             )
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _write_plot(rows: list[ParallelRow], path: Path) -> None:
+def _write_plot(rows: list[ParallelRow], path: Path, *, metric: str) -> None:
     _ensure_parent(path)
-    ok_rows = [r for r in rows if r.status == "ok" and math.isfinite(r.speedup)]
+    if metric == "factor":
+        values_all = [r.speedup for r in rows]
+        ylabel = "Factor speedup vs serial warm refactorize"
+        title = "SuperLU_DIST Parallel Factor Speedup"
+    elif metric == "solve":
+        values_all = [r.solve_speedup for r in rows]
+        ylabel = "Solve speedup vs serial warm solve"
+        title = "SuperLU_DIST Parallel Solve Speedup"
+    else:
+        raise ValueError(f"unknown metric: {metric}")
+
+    ok_rows = [r for r, v in zip(rows, values_all) if r.status == "ok" and math.isfinite(v)]
     if not ok_rows:
         raise ValueError("no successful rows to plot")
 
+    values = [r.speedup if metric == "factor" else r.solve_speedup for r in ok_rows]
     labels = [f"{r.ntasks}/{r.cpus_per_task}\n{r.nrow}x{r.ncol}" for r in ok_rows]
-    values = [r.speedup for r in ok_rows]
     x = np.arange(len(ok_rows))
 
     with plt.rc_context(
@@ -468,9 +519,9 @@ def _write_plot(rows: list[ParallelRow], path: Path) -> None:
 
         ax.set_xticks(x)
         ax.set_xticklabels(labels, fontsize=9)
-        ax.set_ylabel("Speedup vs serial warm refactorize", fontsize=11)
+        ax.set_ylabel(ylabel, fontsize=11)
         ax.set_xlabel("ntasks / cpus-per-task and process grid", fontsize=11)
-        ax.set_title("SuperLU_DIST Parallel Configuration Study", fontsize=12)
+        ax.set_title(title, fontsize=12)
 
         y_max = max(values)
         ax.set_ylim(0.0, y_max * 1.25 if y_max > 0 else 1.0)
@@ -490,6 +541,7 @@ def _write_meta(
     n: int,
     repeats: int,
     warmup: int,
+    native_complex: bool,
     superlu_profile: dict[str, Any],
     serial_baseline: dict[str, Any],
 ) -> None:
@@ -497,6 +549,7 @@ def _write_meta(
     payload = {
         "matrix": {"n": n, "N": n * n},
         "measurement": {"repeats": repeats, "warmup": warmup},
+        "dist_runtime": {"native_complex": bool(native_complex)},
         "serial_baseline": serial_baseline,
         "superlu_profile": superlu_profile,
         "rows": [asdict(r) for r in rows],
@@ -504,12 +557,30 @@ def _write_meta(
     path.write_text(toml.dumps(payload), encoding="utf-8")
 
 
-def _compute_speedups(rows: list[ParallelRow], *, baseline: float) -> list[ParallelRow]:
+def _compute_speedups(
+    rows: list[ParallelRow],
+    *,
+    factor_baseline: float,
+    solve_baseline: float,
+) -> list[ParallelRow]:
     out: list[ParallelRow] = []
     for r in rows:
-        spd = float("nan")
-        if baseline is not None and r.status == "ok" and math.isfinite(r.factor_time_s) and r.factor_time_s > 0:
-            spd = baseline / r.factor_time_s
+        factor_spd = float("nan")
+        solve_spd = float("nan")
+        if (
+            factor_baseline is not None
+            and r.status == "ok"
+            and math.isfinite(r.factor_time_s)
+            and r.factor_time_s > 0
+        ):
+            factor_spd = factor_baseline / r.factor_time_s
+        if (
+            solve_baseline is not None
+            and r.status == "ok"
+            and math.isfinite(r.solve_time_s)
+            and r.solve_time_s > 0
+        ):
+            solve_spd = solve_baseline / r.solve_time_s
         out.append(
             ParallelRow(
                 ntasks=r.ntasks,
@@ -518,7 +589,9 @@ def _compute_speedups(rows: list[ParallelRow], *, baseline: float) -> list[Paral
                 ncol=r.ncol,
                 grid=r.grid,
                 factor_time_s=r.factor_time_s,
-                speedup=spd,
+                solve_time_s=r.solve_time_s,
+                speedup=factor_spd,
+                solve_speedup=solve_spd,
                 status=r.status,
                 error=r.error,
                 cold_full_factor_s=r.cold_full_factor_s,
@@ -529,7 +602,8 @@ def _compute_speedups(rows: list[ParallelRow], *, baseline: float) -> list[Paral
                 superlu_phase_fact_ms=r.superlu_phase_fact_ms,
                 superlu_profile_status=r.superlu_profile_status,
                 superlu_profile_error=r.superlu_profile_error,
-                serial_baseline_refactorize_s=baseline,
+                serial_baseline_refactorize_s=factor_baseline,
+                serial_baseline_solve_s=solve_baseline,
             )
         )
     return out
@@ -556,13 +630,25 @@ def main(
     launcher_extra_args: str = typer.Option("", "--launcher-extra-args", help="Extra launcher args split by spaces."),
     wait_timeout_sec: float = typer.Option(600.0, "--wait-timeout-sec", min=1.0),
     library_path: str = typer.Option("", "--library-path", help="Directory containing libsuperlu_dist_python."),
+    legacy_real_block: bool = typer.Option(
+        False,
+        "--legacy-real-block",
+        help="Use legacy real 2N block fallback instead of native complex path.",
+    ),
     seed: int = typer.Option(0, "--seed"),
     out_csv: str = typer.Option("experiments/dist_parallel/parallel_config.csv", "--out-csv"),
     out_latex: str = typer.Option(
         "experiments/dist_parallel/parallel_config_rows.tex",
         "--out-latex",
     ),
-    out_plot: str = typer.Option("figures/parallel_config_speedup.png", "--out-plot"),
+    out_plot_factor: str = typer.Option(
+        "figures/parallel_config_factor_speedup.png",
+        "--out-plot-factor",
+    ),
+    out_plot_solve: str = typer.Option(
+        "figures/parallel_config_solve_speedup.png",
+        "--out-plot-solve",
+    ),
     out_meta: str = typer.Option("experiments/dist_parallel/parallel_config.toml", "--out-meta"),
     redraw_only: bool = typer.Option(
         False,
@@ -577,15 +663,21 @@ def main(
 ) -> None:
     csv_path = Path(out_csv)
     latex_path = Path(out_latex)
-    plot_path = Path(out_plot)
+    factor_plot_path = Path(out_plot_factor)
+    solve_plot_path = Path(out_plot_solve)
     meta_path = Path(out_meta)
 
     if redraw_only:
         source_csv = Path(redraw_from_csv) if redraw_from_csv.strip() else csv_path
-        logger.info(f"Redraw-only mode: source={source_csv}, out_plot={plot_path}")
+        logger.info(
+            f"Redraw-only mode: source={source_csv}, "
+            f"out_factor_plot={factor_plot_path}, out_solve_plot={solve_plot_path}"
+        )
         rows = _read_csv(source_csv)
-        _write_plot(rows, plot_path)
-        logger.info(f"Plot saved: {plot_path}")
+        _write_plot(rows, factor_plot_path, metric="factor")
+        _write_plot(rows, solve_plot_path, metric="solve")
+        logger.info(f"Factor plot saved: {factor_plot_path}")
+        logger.info(f"Solve plot saved: {solve_plot_path}")
         return
 
     ntasks_values = _parse_int_list(ntasks_list)
@@ -601,12 +693,19 @@ def main(
     rng = np.random.default_rng(seed)
     _, eps_update = _build_eps_pair(n, eps_si, eps_sio2, rng)
     A = _build_fdfd_matrix(eps_update, wavelength, points_per_wavelength, npml)
+    b = (
+        rng.standard_normal(n * n) + 1j * rng.standard_normal(n * n)
+    ).astype(np.complex128)
 
     parsed_launcher = launcher.strip() or None
     parsed_library_path = library_path.strip() or None
     parsed_launcher_extra_args = tuple(x for x in launcher_extra_args.split() if x)
-    serial_cold_t, serial_warm_t, serial_err = _measure_serial_factor_time(
+    native_complex = not legacy_real_block
+
+    logger.info(f"dist native_complex={native_complex}")
+    serial_cold_t, serial_warm_t, serial_solve_t, serial_err = _measure_serial_factor_time(
         A,
+        b,
         repeats=repeats,
         warmup=warmup,
     )
@@ -614,7 +713,10 @@ def main(
         logger.warning(f"[serial_baseline] failed: {serial_err}")
     else:
         logger.info(
-            f"[serial_baseline] cold_full_factor={serial_cold_t:.3e} s, warm_refactorize={serial_warm_t:.3e} s"
+            (
+                f"[serial_baseline] cold_full_factor={serial_cold_t:.3e} s, "
+                f"warm_refactorize={serial_warm_t:.3e} s, warm_solve={serial_solve_t:.3e} s"
+            )
         )
 
     superlu_profile = _profile_superlu_factor_breakdown(A, colperm=colperm)
@@ -641,8 +743,9 @@ def main(
                 nc=spec.ncol,
             )
         )
-        cold_factor_t, warm_refactor_t, err = _measure_factor_time(
+        cold_factor_t, warm_refactor_t, warm_solve_t, err = _measure_factor_solve_time(
             A,
+            b,
             spec,
             repeats=repeats,
             warmup=warmup,
@@ -655,6 +758,7 @@ def main(
             launcher_extra_args=parsed_launcher_extra_args,
             wait_timeout_sec=wait_timeout_sec,
             library_path=parsed_library_path,
+            native_complex=native_complex,
         )
 
         status = "ok" if not err else "failed"
@@ -665,7 +769,9 @@ def main(
             ncol=spec.ncol,
             grid=f"{spec.nrow}x{spec.ncol}",
             factor_time_s=warm_refactor_t,
+            solve_time_s=warm_solve_t,
             speedup=float("nan"),
+            solve_speedup=float("nan"),
             status=status,
             error=err,
             cold_full_factor_s=cold_factor_t,
@@ -675,12 +781,19 @@ def main(
 
         if status == "ok":
             logger.info(
-                f"cold_full_factor={cold_factor_t:.6e} s, warm_refactorize={warm_refactor_t:.6e} s"
+                (
+                    f"cold_full_factor={cold_factor_t:.6e} s, warm_refactorize={warm_refactor_t:.6e} s, "
+                    f"warm_solve={warm_solve_t:.6e} s"
+                )
             )
         else:
             logger.warning(f"failed: {err}")
 
-    rows = _compute_speedups(rows_raw, baseline=serial_warm_t)
+    rows = _compute_speedups(
+        rows_raw,
+        factor_baseline=serial_warm_t,
+        solve_baseline=serial_solve_t,
+    )
     _attach_superlu_profile(rows, superlu_profile)
     _write_csv(rows, csv_path)
     _write_latex_rows(rows, latex_path)
@@ -690,18 +803,22 @@ def main(
         n=n,
         repeats=repeats,
         warmup=warmup,
+        native_complex=native_complex,
         superlu_profile=superlu_profile,
         serial_baseline={
             "cold_full_factor_s": serial_cold_t,
             "warm_refactorize_s": serial_warm_t,
+            "warm_solve_s": serial_solve_t,
             "status": "ok" if not serial_err else "failed",
             "error": serial_err,
         },
     )
 
     try:
-        _write_plot(rows, plot_path)
-        logger.info(f"Plot saved: {plot_path}")
+        _write_plot(rows, factor_plot_path, metric="factor")
+        _write_plot(rows, solve_plot_path, metric="solve")
+        logger.info(f"Factor plot saved: {factor_plot_path}")
+        logger.info(f"Solve plot saved: {solve_plot_path}")
     except Exception as exc:
         logger.warning(f"plot skipped: {type(exc).__name__}: {exc}")
 

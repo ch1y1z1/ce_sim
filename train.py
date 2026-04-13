@@ -154,6 +154,14 @@ def main(
     # 记录配置文件路径
     logger.info(f"配置文件: {config_file}")
     logger.info(f"训练 JIT: {'开启' if enable_jit else '关闭'}")
+    simulation_cfg = config.get("simulation", {}) or {}
+    if (
+        simulation_cfg.get("backend") == "fdfd_solver"
+        and bool(simulation_cfg.get("enable_superlu_dist", False))
+    ):
+        dist_cfg = simulation_cfg.get("superlu_dist", {}) or {}
+        native_complex = bool(dist_cfg.get("native_complex", True))
+        logger.info(f"superlu_dist.native_complex: {native_complex}")
     if applied_overrides:
         logger.info(f"命令行覆盖参数: {applied_overrides}")
     # 记录开始训练时间和工作目录

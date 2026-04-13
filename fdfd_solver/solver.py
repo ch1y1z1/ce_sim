@@ -75,7 +75,8 @@ def _maybe_log_backend_once(
             desc = (
                 "superlu_dist"
                 f"(nrow={dist_config.nrow}, ncol={dist_config.ncol}, "
-                f"rowperm={dist_config.rowperm}, colperm={dist_config.colperm})"
+                f"rowperm={dist_config.rowperm}, colperm={dist_config.colperm}, "
+                f"native_complex={dist_config.native_complex})"
             )
         _log_info(f"[fdfd_solver] backend: {desc}, BLAS backend: {blas}")
         _DIST_BACKEND_LOGGED = True

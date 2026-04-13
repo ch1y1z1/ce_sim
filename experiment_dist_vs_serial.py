@@ -266,6 +266,7 @@ def _measure_dist(
     launcher_extra_args: tuple[str, ...],
     wait_timeout_sec: float,
     library_path: Optional[str],
+    native_complex: bool,
 ) -> BackendResult:
     factor_warm_samples: list[float] = []
     solve_warm_samples: list[float] = []
@@ -284,6 +285,7 @@ def _measure_dist(
             launcher=launcher,
             launcher_extra_args=launcher_extra_args,
             wait_timeout_sec=wait_timeout_sec,
+            native_complex=native_complex,
         )
 
         # Cold run includes worker startup + first factorization
@@ -435,12 +437,14 @@ def _write_meta(
     n: int,
     repeats: int,
     warmup: int,
+    native_complex: bool,
     superlu_profile: dict[str, Any],
 ) -> None:
     _ensure_parent(path)
     payload = {
         "matrix": {"n": n, "N": n * n},
         "measurement": {"repeats": repeats, "warmup": warmup},
+        "dist_runtime": {"native_complex": bool(native_complex)},
         "superlu_profile": superlu_profile,
         "rows": [asdict(r) for r in rows],
     }
@@ -457,8 +461,8 @@ def main(
     eps_si: float = typer.Option(12.25, "--eps-si"),
     eps_sio2: float = typer.Option(2.085, "--eps-sio2"),
     npml: int = typer.Option(20, "--npml", min=0),
-    rowperm: int = typer.Option(0, "--rowperm"),
-    colperm: int = typer.Option(0, "--colperm"),
+    rowperm: int = typer.Option(1, "--rowperm"),
+    colperm: int = typer.Option(2, "--colperm"),
     int64: int = typer.Option(1, "--int64"),
     algo3d: int = typer.Option(0, "--algo3d"),
     verbosity: bool = typer.Option(False, "--verbosity"),
@@ -466,6 +470,11 @@ def main(
     launcher_extra_args: str = typer.Option("", "--launcher-extra-args", help="Extra launcher args split by spaces."),
     wait_timeout_sec: float = typer.Option(600.0, "--wait-timeout-sec", min=1.0),
     library_path: str = typer.Option("", "--library-path", help="Directory containing libsuperlu_dist_python."),
+    legacy_real_block: bool = typer.Option(
+        False,
+        "--legacy-real-block",
+        help="Use legacy real 2N block fallback instead of native complex path.",
+    ),
     seed: int = typer.Option(0, "--seed"),
     out_csv: str = typer.Option(
         "experiments/dist_parallel/serial_vs_dist_baseline.csv",
@@ -496,6 +505,8 @@ def main(
     parsed_launcher = launcher.strip() or None
     parsed_library_path = library_path.strip() or None
     parsed_launcher_extra_args = tuple(x for x in launcher_extra_args.split() if x)
+    native_complex = not legacy_real_block
+    logger.info(f"dist native_complex={native_complex}")
 
     old_env = _set_single_thread_env()
     try:
@@ -515,6 +526,7 @@ def main(
             launcher_extra_args=parsed_launcher_extra_args,
             wait_timeout_sec=wait_timeout_sec,
             library_path=parsed_library_path,
+            native_complex=native_complex,
         )
     finally:
         _restore_env(old_env)
@@ -523,7 +535,15 @@ def main(
     _attach_superlu_profile(rows, superlu_profile)
     _write_csv(rows, csv_path)
     _write_latex_rows(rows, latex_path)
-    _write_meta(rows, meta_path, n=n, repeats=repeats, warmup=warmup, superlu_profile=superlu_profile)
+    _write_meta(
+        rows,
+        meta_path,
+        n=n,
+        repeats=repeats,
+        warmup=warmup,
+        native_complex=native_complex,
+        superlu_profile=superlu_profile,
+    )
 
     if superlu_profile.get("status") == "ok":
         logger.info(

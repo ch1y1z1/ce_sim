@@ -27,6 +27,7 @@ nrow = 2      # SuperLU_DIST 进程网格行数
 ncol = 1      # SuperLU_DIST 进程网格列数
 rowperm = 0   # 行置换，0=单位置换（NOROWPERM）
 colperm = 0   # 列置换，0=单位置换（NATURAL）
+native_complex = true  # 启用 complex128 原生复数求解路径（推荐）
 
 [[layers]]
 [layers.input]
