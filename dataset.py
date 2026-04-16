@@ -122,6 +122,30 @@ def prepare_io_dataset(dataset_config):
     return n_bits, masks, expected_output, inputs, outputs
 
 
+def prepare_io_dataset_wdm(dataset_config):
+    """准备 WDM 任务的数据集。
+
+    WDM 任务使用单输入端口，输入值直接作为幅值掩码，不做二进制展开。
+    """
+    inputs = dataset_config["input"]
+    if type(inputs) is str:
+        inputs = np.load(inputs)
+    else:
+        inputs = np.array(inputs)
+
+    outputs = dataset_config["output"]
+    if type(outputs) is str:
+        outputs = np.load(outputs)
+    else:
+        outputs = np.array(outputs)
+
+    n_bits = dataset_config["n_bits"]
+    masks = np.array([[float(x)] for x in inputs])
+    expected_output = np.array(list(map(lambda x: encode_output(n_bits, x), outputs)))
+
+    return n_bits, masks, expected_output, inputs, outputs
+
+
 if __name__ == "__main__":
     # 测试编码和解码函数
 

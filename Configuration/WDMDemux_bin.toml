@@ -1,0 +1,79 @@
+n_bits = 2
+
+[task]
+type = "wdm_demux"
+
+[grid]
+nx = 148
+ny = 148
+resolution = 40e-9
+npml = 20
+region_distance = 10
+src_pos = 1
+wg_width = 8
+source_margin = 2
+
+[dataset]
+n_bits = 2
+input = [1]
+output = [1, 2]
+
+[[layers]]
+ActFunType = "sigmoid"
+[layers.input]
+n_bits = 1
+bit_period = 25
+[layers.output]
+n_bits = 2
+bit_period = 25
+
+[basic]
+bin_bool = true
+epsilon_min = 6.0
+epsilon_max = 8.1796
+epsilon_min_learn_bool = false
+epsilon_max_learn_bool = false
+wavelength_1 = 1310e-9
+wavelength_2 = 1550e-9
+kernel_radius = 2
+alpha = 3e1
+beta = 0.5
+proj_beta = 1.0
+proj_beta_max = 1e4
+proj_eta = 0.5
+num_proj = 1
+num_conv = 1
+E0_scale = 1.0
+
+[train]
+loss_type = "MSE"
+step_size = 1e-1
+step_size_stair_bool = false
+proj_beta_stair_bool = true
+proj_beta_stair_size = [10.0, 100.0, 1000.0, 9000.0]
+test_batch_size = 32
+train_batch_size = 32
+num_epochs = 2
+penalty_factor = 1.5
+pred_threshold = 25.0
+enable_jit = true
+
+[simulation]
+backend = "fdfd_solver"
+enable_batch = false
+enable_symbolic_reuse = false
+enable_superlu_dist = false
+
+[simulation.superlu_dist]
+nrow = 2      # SuperLU_DIST 进程网格行数
+ncol = 1      # SuperLU_DIST 进程网格列数
+rowperm = 0   # 行置换，0=单位置换（NOROWPERM）
+colperm = 0   # 列置换，0=单位置换（NATURAL）
+native_complex = true  # 启用 complex128 原生复数求解路径（推荐）
+
+[save_load]
+base_path = "./models"
+save_pics_bool = false
+save_bool = false
+save_interval = 2
+viz_interval = 2

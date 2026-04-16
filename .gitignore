@@ -13,3 +13,4 @@ test/
 **/*.so
 experiments/
 figures/
+ref/
